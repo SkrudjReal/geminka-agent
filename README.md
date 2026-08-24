@@ -56,14 +56,17 @@
 ```
 geminka-agent/
 ├── app/
-│   ├── core/               # Конфигурация, пути и контекст диалогов
+│   ├── core/               # Конфигурация, сессии, логирование и контекст
 │   │   ├── config.py
-│   │   └── context.py
+│   │   ├── context.py
+│   │   ├── sessions.py
+│   │   └── logger.py
 │   ├── engines/            # Эмоциональное ядро, адаптация и RP-движок
 │   │   ├── emotional.py
 │   │   ├── adaptive.py
 │   │   └── rp.py
-│   ├── services/           # Antigravity OMP мост, сборщик ассетов, RAG и стриминг
+│   ├── services/           # Broadcaster, Antigravity OMP мост, сборщик ассетов, RAG и стриминг
+│   │   ├── broadcaster.py
 │   │   ├── antigravity.py
 │   │   ├── harvester.py
 │   │   ├── rag.py
@@ -73,6 +76,10 @@ geminka-agent/
 │   │   ├── middlewares.py
 │   │   └── helpers.py
 │   └── main.py             # Главный модуль приложения
+├── data/                   # Данные, стикерпаки и шаблоны схем
+│   ├── bot_stickers.json
+│   ├── user_assets.json
+│   └── *.example.json
 ├── main.py                 # Корневая точка входа
 ├── bot.py                  # Обёртка обратной совместимости
 ├── run.sh                  # Скрипт запуска через uv

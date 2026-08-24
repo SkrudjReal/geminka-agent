@@ -18,15 +18,10 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
-from app.bot.helpers import (
-    extract_message_context,
-    load_sessions,
-    save_sessions,
-    send_response,
-    sessions,
-)
+from app.bot.helpers import extract_message_context, send_response
 from app.bot.middlewares import check_auth
 from app.core import config
+from app.core.sessions import session_manager
 from app.engines.adaptive import adaptive_engine
 from app.engines.emotional import MOOD_DEFINITIONS, emotion_engine
 from app.engines.rp import detect_rp_command, get_random_rp_phrase
@@ -284,9 +279,7 @@ async def cmd_new(message: types.Message):
         await message.answer("⛔ Доступ ограничен.")
         return
 
-    user_key = str(message.from_user.id)
-    sessions.pop(user_key, None)
-    save_sessions()
+    session_manager.remove(message.from_user.id)
     client.clear_history(message.from_user.id)
     await message.answer("✨ Контекст и история сброшены! Начинаем диалог с чистого листа.")
 
@@ -469,14 +462,13 @@ async def handle_any_message(message: types.Message, bot: Bot):
     adaptive_context = adaptive_engine.format_adaptive_prompt_context(message.from_user.id)
     user_emojis_context = asset_harvester.format_emojis_prompt_context(message.from_user.id)
 
-    user_key = str(message.from_user.id)
-    convo_id = sessions.get(user_key)
+    user_id = message.from_user.id
+    convo_id = session_manager.get(user_id)
 
     if not convo_id or not client.get_transcript_path(convo_id).exists():
         convo_id = client.get_latest_conversation_id()
         if convo_id:
-            sessions[user_key] = convo_id
-            save_sessions()
+            session_manager.set(user_id, convo_id)
 
     # Create live stream consumer
     consumer = TelegramStreamConsumer(

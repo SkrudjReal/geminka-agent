@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from aiogram import Bot, types
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
 from app.core import config
 from app.services.harvester import asset_harvester
@@ -25,28 +25,6 @@ TEXT_EXTENSIONS = {
     ".php", ".rb", ".lua", ".ini", ".conf", ".toml", ".dockerfile", ".log",
 }
 
-# Global in-memory sessions dictionary
-sessions: Dict[str, str] = {}
-
-
-def load_sessions() -> None:
-    global sessions
-    if config.SESSIONS_FILE.exists():
-        try:
-            with open(config.SESSIONS_FILE, "r", encoding="utf-8") as f:
-                sessions.update(json.load(f))
-                logger.info(f"Loaded {len(sessions)} active sessions.")
-        except Exception as e:
-            logger.warning(f"Failed to load sessions: {e}")
-
-
-def save_sessions() -> None:
-    try:
-        with open(config.SESSIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.warning(f"Failed to save sessions: {e}")
-
 
 async def send_response(message: types.Message, text: str) -> None:
     """Sends text in chunks <= 4000 characters, rendered as clean Telegram HTML."""
@@ -58,6 +36,8 @@ async def send_response(message: types.Message, text: str) -> None:
             await message.answer(html_chunk, parse_mode=ParseMode.HTML)
         except TelegramBadRequest:
             await message.answer(chunk, parse_mode=None)
+        except TelegramAPIError as e:
+            logger.error(f"Failed to send chunk: {e.message}")
 
 
 async def download_telegram_file(bot: Bot, file_id: str, filename: str) -> Path:
@@ -78,7 +58,8 @@ def read_text_file_preview(path: Path, max_bytes: int = 65536) -> Optional[str]:
                 return f.read(max_bytes) + "\n... [файл обрезан из-за размера]"
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
-    except Exception:
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning(f"Could not read text preview for {path}: {e}")
         return None
 
 
@@ -115,23 +96,28 @@ async def inspect_custom_emojis(message: types.Message, bot: Bot) -> List[Dict]:
                 emoji_char=st.emoji or "✨",
                 set_name=st.set_name,
             )
+    except TelegramAPIError as e:
+        logger.debug(f"Could not fetch custom emoji stickers via Telegram API: {e}")
     except Exception as e:
-        logger.debug(f"Could not fetch custom emoji stickers: {e}")
+        logger.warning(f"Unexpected error during custom emoji inspection: {e}")
 
     if discovered and CUSTOM_EMOJIS_FILE.exists():
         try:
             with open(CUSTOM_EMOJIS_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             saved = []
 
         existing_ids = {item["custom_emoji_id"] for item in saved if "custom_emoji_id" in item}
         new_items = [d for d in discovered if d["custom_emoji_id"] not in existing_ids]
         if new_items:
             saved.extend(new_items)
-            with open(CUSTOM_EMOJIS_FILE, "w", encoding="utf-8") as f:
-                json.dump(saved, f, indent=2, ensure_ascii=False)
-            logger.info(f"Saved {len(new_items)} new custom emojis.")
+            try:
+                with open(CUSTOM_EMOJIS_FILE, "w", encoding="utf-8") as f:
+                    json.dump(saved, f, indent=2, ensure_ascii=False)
+                logger.info(f"Saved {len(new_items)} new custom emojis.")
+            except OSError as e:
+                logger.warning(f"Could not persist custom emojis: {e}")
 
     return discovered
 
@@ -159,7 +145,7 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
             try:
                 dest = await download_telegram_file(bot, orig.photo[-1].file_id, "reply_photo.jpg")
                 orig_media_info = f"\n[Прикрепленное фото: путь {dest}]"
-            except Exception as e:
+            except (TelegramAPIError, OSError) as e:
                 orig_media_info = f"\n[Фото (ошибка скачивания: {e})]"
         elif orig.document:
             try:
@@ -170,7 +156,7 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
                     if content:
                         preview = f"\nСодержимое документа:\n```\n{content}\n```"
                 orig_media_info = f"\n[Прикрепленный документ: {orig.document.file_name}, путь {dest}]{preview}"
-            except Exception as e:
+            except (TelegramAPIError, OSError) as e:
                 orig_media_info = f"\n[Документ (ошибка скачивания: {e})]"
         elif orig.sticker:
             pack_name = orig.sticker.set_name or "unknown"
@@ -186,7 +172,7 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
         try:
             dest = await download_telegram_file(bot, message.photo[-1].file_id, "incoming_photo.jpg")
             parts.append(f"[Пользователь прислал фото, сохранено локально: {dest}]")
-        except Exception as e:
+        except (TelegramAPIError, OSError) as e:
             parts.append(f"[Пользователь прислал фото (ошибка сохранения: {e})]")
 
     elif message.document:
@@ -199,7 +185,7 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
                 if content:
                     preview = f"\nСодержимое файла {doc.file_name}:\n```\n{content}\n```"
             parts.append(f"[Пользователь прикрепил документ: {doc.file_name}, сохранено: {dest}]{preview}")
-        except Exception as e:
+        except (TelegramAPIError, OSError) as e:
             parts.append(f"[Пользователь прикрепил документ: {doc.file_name} (ошибка скачивания: {e})]")
 
     elif message.sticker:
