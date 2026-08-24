@@ -1,0 +1,16 @@
+services:
+  geminka-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: geminka-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./memories:/app/memories
+      - ./system_prompt.txt:/app/system_prompt.txt
+      - ./downloads:/app/downloads

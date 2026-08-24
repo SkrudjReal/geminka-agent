@@ -100,7 +100,19 @@ DEFAULT_MODEL=flash
 
 ### 3. Запуск бота
 
-#### ⚡ Вариант A: Через `uv` (Рекомендуемый, ультрабыстрый)
+#### 🐳 Вариант A: Через Docker Compose (Изолированный, в 1 команду)
+```bash
+# Сборка и запуск контейнера в фоне
+docker compose up -d --build
+
+# Просмотр логов в реальном времени
+docker compose logs -f
+
+# Остановка
+docker compose down
+```
+
+#### ⚡ Вариант B: Через `uv` (Ультрабыстрый локальный)
 `uv` автоматически создаст окружение и установит зависимости за доли секунды:
 ```bash
 # Установка зависимостей и запуск одной командой
@@ -113,7 +125,7 @@ uv run bot.py
 nohup uv run bot.py > bot.log 2>&1 &
 ```
 
-#### 🐍 Вариант B: Классический Python venv + pip
+#### 🐍 Вариант C: Классический Python venv + pip
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
