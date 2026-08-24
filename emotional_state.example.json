@@ -1,0 +1,12 @@
+{
+  "default": {
+    "user_id": 0,
+    "mood": "cheerful",
+    "energy": 90,
+    "affection": 60,
+    "affinity": 78,
+    "warmth": 80,
+    "total_interactions": 0,
+    "memories": []
+  }
+}

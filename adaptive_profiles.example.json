@@ -1,0 +1,12 @@
+{
+  "default": {
+    "user_id": 0,
+    "dominance_score": 0.0,
+    "playfulness_score": 0.0,
+    "romantic_warmth": 0.0,
+    "avg_message_length": 40.0,
+    "favorite_stickers": [],
+    "interaction_count": 0,
+    "detected_psychotype": "Озорной Трикстер / Игрок"
+  }
+}
