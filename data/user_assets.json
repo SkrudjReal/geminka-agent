@@ -168,14 +168,30 @@
       "tags": [
         "🍔"
       ]
+    },
+    "CAACAgIAAxkBAAIDtmqM0K0wbAosq5W-EtD71jtsKsbEAAJSlAACltgZS0J_Y7s4OpMNPQQ": {
+      "file_id": "CAACAgIAAxkBAAIDtmqM0K0wbAosq5W-EtD71jtsKsbEAAJSlAACltgZS0J_Y7s4OpMNPQQ",
+      "emoji": "🍷",
+      "set_name": "DistortionOfSubjectivePerception",
+      "is_animated": false,
+      "is_video": true,
+      "count": 1,
+      "first_seen": 1787613506.0319178,
+      "last_used": 1787613506.0319178,
+      "users": [
+        "user"
+      ],
+      "tags": [
+        "🍷"
+      ]
     }
   },
   "sticker_packs": {
     "DistortionOfSubjectivePerception": {
       "set_name": "DistortionOfSubjectivePerception",
       "sample_file_id": "CAACAgIAAxUAAWqJlZKMU2mbMpuZWvV4awWu5hzMAALRowACtHWBSkU4ItcrWXtxPQQ",
-      "sticker_count": 18,
-      "last_used": 1787587315.0043814
+      "sticker_count": 19,
+      "last_used": 1787613506.0319178
     }
   },
   "user_preferences": {}

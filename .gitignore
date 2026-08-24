@@ -38,6 +38,7 @@ data/sessions.json
 data/emotional_state.json
 data/adaptive_profiles.json
 data/custom_emojis.json
+data/user_assets.json
 downloads/
 
 # IDE & OS
