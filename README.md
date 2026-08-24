@@ -80,18 +80,11 @@ geminka-agent/
 
 ### 1. Клонирование репозитория
 ```bash
-git clone https://github.com/YOUR_USERNAME/geminka-agent.git
+git clone https://github.com/SkrudjReal/geminka-agent.git
 cd geminka-agent
 ```
 
-### 2. Настройка виртуального окружения
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Конфигурация `.env`
+### 2. Конфигурация `.env`
 Скопируйте пример файла конфигурации:
 ```bash
 cp .env.example .env
@@ -105,13 +98,27 @@ OMP_BASE_URL=http://127.0.0.1:4000/v1
 DEFAULT_MODEL=flash
 ```
 
-### 4. Запуск бота
+### 3. Запуск бота
+
+#### ⚡ Вариант A: Через `uv` (Рекомендуемый, ультрабыстрый)
+`uv` автоматически создаст окружение и установит зависимости за доли секунды:
 ```bash
-# Обычный запуск
-python bot.py
+# Установка зависимостей и запуск одной командой
+uv run bot.py
+
+# Или через готовый скрипт запуска
+./run.sh
 
 # Запуск в фоновом режиме (daemon)
-nohup python bot.py > bot.log 2>&1 &
+nohup uv run bot.py > bot.log 2>&1 &
+```
+
+#### 🐍 Вариант B: Классический Python venv + pip
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python bot.py
 ```
 
 ---
