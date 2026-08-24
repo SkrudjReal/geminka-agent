@@ -98,6 +98,39 @@ async def send_response(message: types.Message, text: str) -> None:
             await message.answer(chunk, parse_mode=None)
 
 
+from aiogram import BaseMiddleware
+from aiogram.types import TelegramObject
+from typing import Callable, Dict, Any, Awaitable
+
+
+class OwnerAuthMiddleware(BaseMiddleware):
+    """Outer middleware to filter all incoming updates strictly by ALLOWED_USERS."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        if not config.ALLOWED_USERS:
+            return await handler(event, data)
+
+        user = data.get("event_from_user")
+        if user and user.id not in config.ALLOWED_USERS:
+            if isinstance(event, types.Message):
+                try:
+                    await event.answer(
+                        "⛔ <b>Доступ ограничен.</b> Этот бот работает в приватном режиме только для своего владельца.",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+            logger.warning(f"Blocked unauthorized access attempt from user {user.id} ({user.full_name})")
+            return
+
+        return await handler(event, data)
+
+
 def check_auth(user_id: int) -> bool:
     return not config.ALLOWED_USERS or user_id in config.ALLOWED_USERS
 
@@ -748,6 +781,11 @@ async def main():
     load_sessions()
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
+    # Register outer middleware to filter unauthorized users globally before any handler
+    auth_mw = OwnerAuthMiddleware()
+    dp.message.outer_middleware(auth_mw)
+    dp.message_reaction.outer_middleware(auth_mw)
+
     dp.include_router(router)
 
     logger.info("Starting Geminka Telegram Bot (OMP Gateway + Reactions + Custom Emojis + Streaming)...")
