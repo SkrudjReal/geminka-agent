@@ -174,7 +174,8 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
                 orig_media_info = f"\n[Документ (ошибка скачивания: {e})]"
         elif orig.sticker:
             pack_name = orig.sticker.set_name or "unknown"
-            orig_media_info = f"\n[Стикер: эмодзи {orig.sticker.emoji}, пак {pack_name}]"
+            st_type = "видео-стикер" if orig.sticker.is_video else ("анимированный стикер" if orig.sticker.is_animated else "статичный стикер")
+            orig_media_info = f"\n[{st_type.capitalize()}: эмодзи '{orig.sticker.emoji}', стикерпак '{pack_name}']"
 
         reply_context = f"\n[В ответ на сообщение от {sender_name}]:\n\"\"\"\n{orig_text}{orig_media_info}\n\"\"\""
 
@@ -210,8 +211,9 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
             is_animated=message.sticker.is_animated,
             is_video=message.sticker.is_video,
         )
+        st_type = "видео-стикер" if message.sticker.is_video else ("анимированный стикер" if message.sticker.is_animated else "стикер")
         parts.append(
-            f"[Пользователь прислал стикер: эмодзи '{message.sticker.emoji}', "
+            f"[Пользователь прислал {st_type}: эмодзи '{message.sticker.emoji}', "
             f"стикерпак '{message.sticker.set_name}']"
         )
 

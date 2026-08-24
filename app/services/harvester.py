@@ -101,11 +101,13 @@ class AssetHarvester:
         user_id: int,
         file_id: str,
         emoji: str = "🌸",
+        emoji_char: Optional[str] = None,
         set_name: Optional[str] = None,
         is_animated: bool = False,
         is_video: bool = False,
     ) -> None:
         """Records a sticker sent by user."""
+        emoji_val = emoji_char or emoji or "🌸"
         fid = str(file_id).strip()
         if not fid:
             return
@@ -117,7 +119,7 @@ class AssetHarvester:
         if fid not in self.data["stickers"]:
             self.data["stickers"][fid] = {
                 "file_id": fid,
-                "emoji": emoji or "🌸",
+                "emoji": emoji_val,
                 "set_name": pack_name,
                 "is_animated": is_animated,
                 "is_video": is_video,
@@ -125,14 +127,14 @@ class AssetHarvester:
                 "first_seen": now,
                 "last_used": now,
                 "users": [uid_str],
-                "tags": [emoji] if emoji else [],
+                "tags": [emoji_val] if emoji_val else [],
             }
         else:
             item = self.data["stickers"][fid]
             item["count"] = item.get("count", 0) + 1
             item["last_used"] = now
-            if emoji and emoji not in item.get("tags", []):
-                item.setdefault("tags", []).append(emoji)
+            if emoji_val and emoji_val not in item.get("tags", []):
+                item.setdefault("tags", []).append(emoji_val)
             if uid_str not in item.get("users", []):
                 item.setdefault("users", []).append(uid_str)
 
