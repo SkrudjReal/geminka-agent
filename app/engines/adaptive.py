@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import config
+from app.core import config
 
 logger = logging.getLogger("geminka-adaptive")
 

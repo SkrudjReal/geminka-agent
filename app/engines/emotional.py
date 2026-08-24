@@ -15,9 +15,11 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from app.core import config
+
 logger = logging.getLogger("geminka-emotions")
 
-STATE_FILE = Path(__file__).resolve().parent / "emotional_state.json"
+STATE_FILE = config.BASE_DIR / "emotional_state.json"
 
 MOOD_DEFINITIONS = {
     "playful": ("Игривое", "Озорное, любит подкалывать, шутить, лёгкий флирт", 85),

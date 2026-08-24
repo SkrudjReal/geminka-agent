@@ -18,7 +18,6 @@ class UserDialogueContext:
         self.max_turns = max_turns
         self.max_chars = max_chars
         self.protect_last_n = protect_last_n
-        # List of {"role": "user" | "assistant", "content": str}
         self.messages: List[Dict[str, str]] = []
         self.rolling_recap: str = ""
 
@@ -115,9 +114,7 @@ class ContextManager:
         full_system = "\n\n".join(system_parts)
 
         messages = [{"role": "system", "content": full_system}]
-        # Append recent active dialogue turns
         messages.extend(ctx.get_sliding_window())
-        # Append current user prompt
         messages.append({"role": "user", "content": current_prompt})
 
         return messages

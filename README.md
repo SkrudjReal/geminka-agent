@@ -55,23 +55,37 @@
 
 ```
 geminka-agent/
-├── bot.py                  # Главный сервис Telegram-бота на aiogram 3.x
-├── config.py               # Конфигурация, переменные окружения и пути
-├── system_prompt.txt       # Динамический системный промпт (горячая перезагрузка)
-├── PERSONA.md              # Матрица личности, психология и лор Коломбины
-├── emotional_engine.py     # Движок эмоций, шкалы теплоты и стадий отношений
-├── adaptive_engine.py      # Анализ психотипа, отзеркаливание темпа и стиля
-├── asset_harvester.py      # Автономный сборщик пользовательских эмодзи и стикерпаков
-├── stream_consumer.py      # Потоковый стриминг, рендеринг Telegram HTML, теги
-├── antigravity_bridge.py   # Мост к OMP Gateway / Antigravity Language Server
-├── rp_engine.py            # Двусторонний Role-Play движок
-├── rag_memory.py           # Долговременная память RAG и поиск фактов
-├── bot_stickers.json       # Базовый каталог стикеров
-├── requirements.txt        # Python зависимости
-├── run.sh                  # Скрипт быстрого запуска
-└── memories/
-    ├── USER.md             # Профиль и предпочтения пользователя
-    └── facts.json          # База фактов RAG
+├── app/
+│   ├── core/               # Конфигурация, пути и контекст диалогов
+│   │   ├── config.py
+│   │   └── context.py
+│   ├── engines/            # Эмоциональное ядро, адаптация и RP-движок
+│   │   ├── emotional.py
+│   │   ├── adaptive.py
+│   │   └── rp.py
+│   ├── services/           # Antigravity OMP мост, сборщик ассетов, RAG и стриминг
+│   │   ├── antigravity.py
+│   │   ├── harvester.py
+│   │   ├── rag.py
+│   │   └── streamer.py
+│   ├── bot/                # Маршрутизация, хендлеры, мидлвари и хелперы
+│   │   ├── handlers.py
+│   │   ├── middlewares.py
+│   │   └── helpers.py
+│   └── main.py             # Главный модуль приложения
+├── main.py                 # Корневая точка входа
+├── bot.py                  # Обёртка обратной совместимости
+├── run.sh                  # Скрипт запуска через uv
+├── Dockerfile              # Мульти-стейдж Dockerfile с uv
+├── docker-compose.yml      # Оркестрация контейнера
+├── pyproject.toml          # Спецификация проекта и зависимости uv
+├── uv.lock                 # Зафиксированные версии пакетов
+├── README.md               # Документация проекта
+├── PERSONA.md              # Профиль личности Коломбины
+├── LICENSE                 # Лицензия MIT
+├── assets/                 # Медиа и фото Коломбины
+├── memories/               # RAG база знаний и предпочтений
+└── system_prompt.txt       # Динамический системный промпт
 ```
 
 ---

@@ -23,9 +23,9 @@ from typing import AsyncGenerator, Dict, List, Optional
 
 import httpx
 
-import config
-from context_manager import context_manager
-from rag_memory import rag_engine
+from app.core import config
+from app.core.context import context_manager
+from app.services.rag import rag_engine
 
 logger = logging.getLogger(__name__)
 

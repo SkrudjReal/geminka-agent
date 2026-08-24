@@ -33,7 +33,7 @@ from aiogram.types import (
     ReplyParameters,
 )
 
-import config
+from app.core import config
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ def get_bot_stickers() -> List[Dict]:
     return _STICKERS_CACHE
 
 
-from asset_harvester import asset_harvester
+from app.services.harvester import asset_harvester
 
 
 def resolve_sticker_file_id(attrs_str: str, user_id: Optional[int] = None) -> Optional[str]:
@@ -505,7 +505,7 @@ class TelegramStreamConsumer:
             rp_is_inline = 'mode="inline"' in rp_attrs.lower()
             m_act = re.search(r'action="([^"]+)"', rp_attrs)
             if m_act:
-                from rp_engine import get_random_rp_phrase
+                from app.engines.rp import get_random_rp_phrase
                 target_mention = self.target_user_mention or "<b>ты</b>"
                 sender_mention = "<b>Коломбина</b>"
                 phrase = get_random_rp_phrase(m_act.group(1), sender_mention, target_mention)

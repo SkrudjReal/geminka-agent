@@ -18,7 +18,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import config
+from app.core import config
 
 logger = logging.getLogger(__name__)
 

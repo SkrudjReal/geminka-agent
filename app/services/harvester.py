@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import config
+from app.core import config
 
 logger = logging.getLogger("geminka-assets")
 
