@@ -35,10 +35,6 @@ bot.log
 
 # User Runtime Data & Sessions
 sessions.json
-emotional_state.json
-adaptive_profiles.json
-user_assets.json
-custom_emojis.json
 downloads/
 
 # IDE & OS

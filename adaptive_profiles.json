@@ -1,0 +1,26 @@
+{
+  "1224362805": {
+    "user_id": 1224362805,
+    "psychotype": "dominant_leader",
+    "avg_message_length": 13,
+    "slang_affinity": 100,
+    "dominant_score": 100,
+    "playful_score": 100,
+    "romantic_score": 96,
+    "technical_score": 75,
+    "observed_traits": [],
+    "recent_messages_sample": [
+      "[В ответ на сообщение от Columbina]:\n\"\"\"\n\n[Стикер: emoji=👅, pack=DistortionOfSub",
+      "[В ответ на сообщение от Columbina]:\n\"\"\"\n\n[Стикер: emoji=❤, pack=HsinHeroprine, ",
+      "какой бургер, пони это не бургер фу",
+      "у нас готовый продукт теперь?",
+      "тогда давай подготовим тебе ворк флоу для userbot kurigram+dispyro который юзерб",
+      "ссылку на репо дай",
+      "так создай сама) gh авторизация есть по идее",
+      "сделано https://github.com/SkrudjReal/geminka-agent",
+      "пуш",
+      "и ещё. оставь стикеры, эмоджи уже существующие в промптах и что ты там ещё удали"
+    ],
+    "last_updated": 1787611185.123407
+  }
+}
