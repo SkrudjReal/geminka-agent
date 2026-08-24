@@ -7,8 +7,8 @@ cd "$SCRIPT_DIR"
 PYTHON_BIN="python3"
 if [ -d "$SCRIPT_DIR/.venv" ]; then
     PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
-elif [ -f "/home/velunae/.hermes/hermes-agent/venv/bin/python" ]; then
-    PYTHON_BIN="/home/velunae/.hermes/hermes-agent/venv/bin/python"
+elif [ -f "$HOME/.hermes/hermes-agent/venv/bin/python" ]; then
+    PYTHON_BIN="$HOME/.hermes/hermes-agent/venv/bin/python"
 fi
 
 echo "[*] Launching Geminka Telegram Bot via Antigravity engine (aiogram)..."

@@ -24,12 +24,18 @@ REASONING_EFFORT = os.getenv("REASONING_EFFORT", "medium").strip()
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
 API_MAX_RETRIES = int(os.getenv("API_MAX_RETRIES", "5"))
 
-# Antigravity Local Fallback Paths
-LINUX_LS_BIN = Path(os.path.expanduser("~/.antigravity-ide-server/bin/2.5.5-ecfbad74d93962fc8ca485d93ab9b4f3d4cb6cf8/extensions/antigravity/bin/language_server_linux_x64"))
-WIN_LS_BIN = Path("/mnt/c/Users/velunae/AppData/Local/Programs/Antigravity/resources/bin/language_server.exe")
-
+# Antigravity Local Fallback Paths (dynamically discovered)
 LINUX_BRAIN_DIR = Path(os.path.expanduser("~/.gemini/antigravity-ide/brain"))
-WIN_BRAIN_DIR = Path("/mnt/c/Users/velunae/.gemini/antigravity-ide/brain")
+LINUX_LS_BIN = Path(os.path.expanduser("~/.antigravity-ide-server/bin/language_server_linux_x64"))
+# Search for language_server_linux_x64 dynamically across installed server versions
+if Path(os.path.expanduser("~/.antigravity-ide-server/bin")).exists():
+    for p in Path(os.path.expanduser("~/.antigravity-ide-server/bin")).glob("*/extensions/antigravity/bin/language_server_linux_x64"):
+        LINUX_LS_BIN = p
+        break
+
+WIN_USER = os.getenv("WINDOWS_USER") or os.getenv("USER", "Default")
+WIN_BRAIN_DIR = Path(f"/mnt/c/Users/{WIN_USER}/.gemini/antigravity-ide/brain")
+WIN_LS_BIN = Path(f"/mnt/c/Users/{WIN_USER}/AppData/Local/Programs/Antigravity/resources/bin/language_server.exe")
 
 SESSIONS_FILE = BASE_DIR / "sessions.json"
 DOWNLOADS_DIR = BASE_DIR / "downloads"
