@@ -136,15 +136,13 @@ uv run bot.py
 ./run.sh
 
 # Запуск в фоновом режиме (daemon)
-nohup uv run bot.py > bot.log 2>&1 &
+nohup uv run main.py > bot.log 2>&1 &
 ```
 
-#### 🐍 Вариант C: Классический Python venv + pip
+#### 🐍 Вариант C: Синхронизация через `uv sync`
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python bot.py
+uv sync
+uv run main.py
 ```
 
 ---
