@@ -37,7 +37,16 @@ WIN_USER = os.getenv("WINDOWS_USER") or os.getenv("USER", "Default")
 WIN_BRAIN_DIR = Path(f"/mnt/c/Users/{WIN_USER}/.gemini/antigravity-ide/brain")
 WIN_LS_BIN = Path(f"/mnt/c/Users/{WIN_USER}/AppData/Local/Programs/Antigravity/resources/bin/language_server.exe")
 
-SESSIONS_FILE = BASE_DIR / "sessions.json"
+# Data & Persistence Paths
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SESSIONS_FILE = DATA_DIR / "sessions.json"
+STICKERS_FILE = DATA_DIR / "bot_stickers.json"
+USER_ASSETS_FILE = DATA_DIR / "user_assets.json"
+EMOTIONAL_STATE_FILE = DATA_DIR / "emotional_state.json"
+ADAPTIVE_STATE_FILE = DATA_DIR / "adaptive_profiles.json"
+CUSTOM_EMOJIS_FILE = DATA_DIR / "custom_emojis.json"
+
 DOWNLOADS_DIR = BASE_DIR / "downloads"
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 PROMPT_FILE = BASE_DIR / "system_prompt.txt"

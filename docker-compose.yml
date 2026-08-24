@@ -11,6 +11,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     volumes:
+      - ./data:/app/data
       - ./memories:/app/memories
       - ./system_prompt.txt:/app/system_prompt.txt
       - ./downloads:/app/downloads

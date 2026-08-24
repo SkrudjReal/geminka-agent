@@ -73,7 +73,7 @@ SURPRISE_CAPTIONS = [
 # Dynamic bot-specific stickers catalog with emotion tags
 _STICKERS_CACHE: List[Dict] = []
 _STICKERS_MTIME: float = 0.0
-_STICKERS_FILE = config.BASE_DIR / "bot_stickers.json"
+_STICKERS_FILE = config.STICKERS_FILE
 
 
 def get_bot_stickers() -> List[Dict]:

@@ -19,7 +19,7 @@ from app.core import config
 
 logger = logging.getLogger("geminka-emotions")
 
-STATE_FILE = config.BASE_DIR / "emotional_state.json"
+STATE_FILE = config.EMOTIONAL_STATE_FILE
 
 MOOD_DEFINITIONS = {
     "playful": ("Игривое", "Озорное, любит подкалывать, шутить, лёгкий флирт", 85),

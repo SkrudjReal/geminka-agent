@@ -34,9 +34,10 @@ ENV/
 bot.log
 
 # User Runtime Data & Sessions
-sessions.json
-emotional_state.json
-adaptive_profiles.json
+data/sessions.json
+data/emotional_state.json
+data/adaptive_profiles.json
+data/custom_emojis.json
 downloads/
 
 # IDE & OS

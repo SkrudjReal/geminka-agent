@@ -16,7 +16,7 @@ from app.services.streamer import md_to_telegram_html
 
 logger = logging.getLogger("geminka-helpers")
 
-CUSTOM_EMOJIS_FILE = config.BASE_DIR / "custom_emojis.json"
+CUSTOM_EMOJIS_FILE = config.CUSTOM_EMOJIS_FILE
 
 TEXT_EXTENSIONS = {
     ".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".css", ".scss", ".json",

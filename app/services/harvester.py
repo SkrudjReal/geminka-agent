@@ -17,7 +17,7 @@ from app.core import config
 
 logger = logging.getLogger("geminka-assets")
 
-USER_ASSETS_FILE = config.BASE_DIR / "user_assets.json"
+USER_ASSETS_FILE = config.USER_ASSETS_FILE
 
 
 class AssetHarvester:

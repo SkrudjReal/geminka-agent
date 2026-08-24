@@ -15,7 +15,7 @@ from app.core import config
 
 logger = logging.getLogger("geminka-adaptive")
 
-ADAPTIVE_STATE_FILE = config.BASE_DIR / "adaptive_profiles.json"
+ADAPTIVE_STATE_FILE = config.ADAPTIVE_STATE_FILE
 
 PSYCHOTYPES = {
     "dominant_leader": {
