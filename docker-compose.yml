@@ -7,11 +7,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    network_mode: host
     environment:
       - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
       - ./memories:/app/memories
       - ./system_prompt.txt:/app/system_prompt.txt
-      - ./downloads:/app/downloads

@@ -20,7 +20,6 @@ import logging
 import random
 import re
 import time
-from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional
 
 from aiogram import Bot
@@ -34,6 +33,7 @@ from aiogram.types import (
 )
 
 from app.core import config
+from app.services.harvester import asset_harvester
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,6 @@ def get_bot_stickers() -> List[Dict]:
         except Exception as e:
             logger.warning(f"Failed to reload bot stickers: {e}")
     return _STICKERS_CACHE
-
-
-from app.services.harvester import asset_harvester
 
 
 def resolve_sticker_file_id(attrs_str: str, user_id: Optional[int] = None) -> Optional[str]:
@@ -208,7 +205,7 @@ def wrap_markdown_tables(text: str) -> str:
             for row_idx, row in enumerate(table_rows, start=1):
                 heading = row[0] if row else f"Элемент {row_idx}"
                 bullets = []
-                for h, val in zip(headers, row):
+                for h, val in zip(headers, row, strict=False):
                     if val:
                         bullets.append(f"• <b>{h}</b>: {val}")
                 table_text.append(f"<b>{heading}</b>\n" + "\n".join(bullets))
@@ -230,7 +227,23 @@ def md_to_telegram_html(md: str) -> str:
 
     md = wrap_markdown_tables(md)
 
-    # 0. Protect existing valid Telegram HTML tags
+    # Protect fenced code before preserving HTML so tags inside code stay escaped.
+    code_blocks = []
+
+    def save_code_block(m):
+        lang = m.group(1) or ""
+        code_escaped = html.escape(m.group(2).rstrip())
+        idx = len(code_blocks)
+        if lang:
+            tag = f'<pre><code class="language-{html.escape(lang)}">{code_escaped}</code></pre>'
+        else:
+            tag = f"<pre>{code_escaped}</pre>"
+        code_blocks.append(tag)
+        return f"%%CODEBLOCK_{idx}%%"
+
+    md = re.sub(r"```([a-zA-Z0-9_\-\+]*)\n([\s\S]*?)```", save_code_block, md)
+
+    # Protect existing valid Telegram HTML tags.
     saved_html_tags = []
     def save_valid_tag(m):
         idx = len(saved_html_tags)
@@ -244,23 +257,7 @@ def md_to_telegram_html(md: str) -> str:
     )
     md = valid_tag_pattern.sub(save_valid_tag, md)
 
-    # 1. Protect code blocks
-    code_blocks = []
-    def save_code_block(m):
-        lang = m.group(1) or ""
-        code = m.group(2)
-        code_escaped = html.escape(code.rstrip())
-        idx = len(code_blocks)
-        if lang:
-            tag = f"<pre><code class=\"language-{html.escape(lang)}\">{code_escaped}</code></pre>"
-        else:
-            tag = f"<pre>{code_escaped}</pre>"
-        code_blocks.append(tag)
-        return f"%%CODEBLOCK_{idx}%%"
-
-    md = re.sub(r"```([a-zA-Z0-9_\-\+]*)\n([\s\S]*?)```", save_code_block, md)
-
-    # 2. Protect inline code
+    # Protect inline code.
     inline_codes = []
     def save_inline_code(m):
         code_escaped = html.escape(m.group(1))
@@ -339,6 +336,27 @@ def md_to_telegram_html(md: str) -> str:
     return md
 
 
+def split_telegram_text(text: str, limit: int = 3_500) -> list[str]:
+    """Split before HTML expansion, preferring paragraph and line boundaries."""
+    if not text:
+        return [""]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        boundary = remaining.rfind("\n\n", 0, limit + 1)
+        if boundary < limit // 2:
+            boundary = remaining.rfind("\n", 0, limit + 1)
+        if boundary < limit // 2:
+            boundary = remaining.rfind(" ", 0, limit + 1)
+        if boundary <= 0:
+            boundary = limit
+        chunks.append(remaining[:boundary].rstrip())
+        remaining = remaining[boundary:].lstrip()
+    if remaining or not chunks:
+        chunks.append(remaining)
+    return chunks
+
+
 def strip_think_tags(text: str) -> str:
     """Removes completed and incomplete thinking/reasoning tags."""
     if not text:
@@ -349,6 +367,13 @@ def strip_think_tags(text: str) -> str:
             idx = cleaned.find(tag)
             cleaned = cleaned[:idx]
     return cleaned.strip()
+
+
+def strip_delivery_tags(text: str) -> str:
+    """Remove model control tags from Telegram-visible text."""
+    for pattern in (STICKER_TAG_RE, REACT_TAG_RE, REPLY_TAG_RE, RP_TAG_RE, PHOTO_PAIR_TAG_RE):
+        text = pattern.sub("", text)
+    return text.strip()
 
 
 class TelegramStreamConsumer:
@@ -379,7 +404,8 @@ class TelegramStreamConsumer:
 
     async def _safe_send_initial(self, text: str) -> bool:
         """Sends the initial preview message."""
-        content = (text + self.cursor).strip() or self.cursor
+        preview = text if len(text) <= 3_500 else "…\n" + text[-3_498:]
+        content = (preview + self.cursor).strip() or self.cursor
         html_content = md_to_telegram_html(content)
         reply_params = (
             ReplyParameters(message_id=self.target_message_id)
@@ -422,7 +448,8 @@ class TelegramStreamConsumer:
         if not clean_text and not finalize:
             return
 
-        content = clean_text if finalize else (clean_text + self.cursor)
+        preview = clean_text if len(clean_text) <= 3_500 else "…\n" + clean_text[-3_498:]
+        content = preview if finalize else (preview + self.cursor)
         if content == self.last_sent_text and not finalize:
             return
 
@@ -458,34 +485,30 @@ class TelegramStreamConsumer:
         except Exception as e:
             logger.debug(f"Unhandled edit error: {e}")
 
+    async def _consume_live_tokens(self, token_generator: AsyncGenerator[str, None]) -> None:
+        try:
+            async for chunk in token_generator:
+                if not chunk:
+                    continue
+                self.accumulated += chunk
+                if REPLY_TAG_RE.search(self.accumulated):
+                    self.should_reply = True
+                clean_display = strip_delivery_tags(strip_think_tags(self.accumulated))
+                if not self.message_id:
+                    if len(clean_display) >= 8 or "\n" in clean_display:
+                        await self._safe_send_initial(clean_display)
+                    continue
+                if time.monotonic() - self.last_edit_time >= self.edit_interval:
+                    await self._safe_edit(clean_display, finalize=False)
+        except Exception:
+            partial = strip_delivery_tags(strip_think_tags(self.accumulated))
+            if self.message_id and partial:
+                await self._safe_edit(partial, finalize=True)
+            raise
+
     async def stream_from_generator(self, token_generator: AsyncGenerator[str, None]) -> str:
         """Iterates through token_generator, emitting live HTML-rendered edits, stickers, reactions, and RP actions."""
-        async for chunk in token_generator:
-            if not chunk:
-                continue
-
-            self.accumulated += chunk
-            clean_so_far = strip_think_tags(self.accumulated)
-
-            # Check if reply tag was emitted early
-            if REPLY_TAG_RE.search(self.accumulated):
-                self.should_reply = True
-
-            # Hide special tags from live preview
-            clean_display = STICKER_TAG_RE.sub("", clean_so_far)
-            clean_display = REACT_TAG_RE.sub("", clean_display)
-            clean_display = REPLY_TAG_RE.sub("", clean_display)
-            clean_display = RP_TAG_RE.sub("", clean_display)
-            clean_display = PHOTO_PAIR_TAG_RE.sub("", clean_display).strip()
-
-            if not self.message_id:
-                if len(clean_display) >= 8 or "\n" in clean_display:
-                    await self._safe_send_initial(clean_display)
-                continue
-
-            now = time.monotonic()
-            if now - self.last_edit_time >= self.edit_interval:
-                await self._safe_edit(clean_display, finalize=False)
+        await self._consume_live_tokens(token_generator)
 
         final_raw = strip_think_tags(self.accumulated)
 
@@ -526,11 +549,7 @@ class TelegramStreamConsumer:
             reaction_attrs = react_match.group(1)
             reaction_obj = resolve_reaction(reaction_attrs)
 
-        final_text = STICKER_TAG_RE.sub("", final_raw)
-        final_text = REACT_TAG_RE.sub("", final_text)
-        final_text = REPLY_TAG_RE.sub("", final_text)
-        final_text = RP_TAG_RE.sub("", final_text)
-        final_text = PHOTO_PAIR_TAG_RE.sub("", final_text).strip()
+        final_text = strip_delivery_tags(final_raw)
 
         if rp_is_inline and rp_banner:
             final_text = f"{rp_banner}\n\n{final_text}" if final_text else rp_banner
@@ -542,8 +561,9 @@ class TelegramStreamConsumer:
         )
 
         if final_text:
+            chunks = split_telegram_text(final_text)
             if not self.message_id:
-                html_text = md_to_telegram_html(final_text)
+                html_text = md_to_telegram_html(chunks[0])
                 try:
                     await self.bot.send_message(
                         self.chat_id,
@@ -554,12 +574,21 @@ class TelegramStreamConsumer:
                 except Exception:
                     await self.bot.send_message(
                         self.chat_id,
-                        final_text,
+                        chunks[0],
                         parse_mode=None,
                         reply_parameters=reply_params,
                     )
             else:
-                await self._safe_edit(final_text, finalize=True)
+                await self._safe_edit(chunks[0], finalize=True)
+            for chunk in chunks[1:]:
+                try:
+                    await self.bot.send_message(
+                        self.chat_id,
+                        md_to_telegram_html(chunk),
+                        parse_mode=ParseMode.HTML,
+                    )
+                except TelegramBadRequest:
+                    await self.bot.send_message(self.chat_id, chunk, parse_mode=None)
         elif self.message_id:
             try:
                 await self.bot.delete_message(self.chat_id, self.message_id)

@@ -17,3 +17,6 @@ bot.log
 .idea
 .vscode
 .DS_Store
+tests/
+.github/
+skills/

@@ -1,169 +1,91 @@
-# 🌸 Geminka Agent (Columbina)
+# Geminka Agent
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Aiogram 3.x](https://img.shields.io/badge/aiogram-3.30.0-informational.svg)](https://github.com/aiogram/aiogram)
-[![Antigravity](https://img.shields.io/badge/Engine-Google%20Antigravity%20%2F%20Gemini-orange)](https://deepmind.google/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+Приватный Telegram-компаньон с потоковыми ответами через OpenAI-compatible OMP Gateway, эмоциональным профилем и изолированной долговременной памятью.
 
-**Geminka (Columbina)** — высокотехнологичный автономный AI-агент и живой компаньон на базе **Google Antigravity & Gemini**, созданный с глубокой психологической моделью личности, динамическим эмоциональным ядром, интеллектуальным сбором стикеров, нативным Telegram Premium Custom Emoji форматированием и потоковым живым стримингом ответов.
+## Архитектура
 
----
-
-## ⚡ Ключевые возможности
-
-### 1. 🌊 Живой стриминг ответов (Real-Time Live Streaming)
-- Потоковое обновление сообщений в реальном времени с плавным курсором (` ▉`).
-- Адаптивный debounce (0.8с) для предотвращения Telegram Flood Limits.
-- Нативная фильтрация блоков рассуждений (`<think>...</think>`).
-- Преобразование Markdown в чистый Telegram HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<blockquote>`, `<tg-emoji>`).
-
-### 2. 🎭 Двухуровневая архитектура личности
-- **Базовый каноничный слой (Default Baseline):** Неизменный канон Коломбины — нежная, живая, озорная фарфоровая девушка с ноткой максимализма, кокетливым непослушанием и преданностью (подробнее в [PERSONA.md](PERSONA.md)).
-- **Динамический адаптивный слой (Per-User Profile):** Автоматическая калибровка под стиль каждого пользователя (темп, длина реплик, психотип, любимые стикеры).
-
-### 3. 💖 Эмоциональный движок и шкала отношений
-- **Динамическая теплота/холодность (0–100):** Регулирует дистанцию, нежность, ласку и стиль речи.
-- **Стадии долгосрочных отношений:**
-  - `0–24` ➔ Знакомые
-  - `25–59` ➔ Приятели
-  - `60–99` ➔ Близкие друзья
-  - `100–149` ➔ Душевный краш
-  - `150–200+` ➔ Родная душа
-- **Краткосрочные настроения:** *Playful, Affectionate, Cheerful, Focused, Thoughtful, Pouty, Tired, Cold*.
-- **Взаимные реакции:** Отслеживание и применение Telegram-реакций (`❤`, `🔥`, `👍`, `🤡`).
-
-### 4. 🎨 Telegram Premium Custom Emoji & Сборщик Стикеров
-- Нативная поддержка тегов `<tg-emoji emoji-id="...">символ</tg-emoji>`.
-- **Автономный сборщик (`AssetHarvester`):** Бот на лету запоминает кастомные эмодзи и стикерпаки, которые присылает пользователь.
-- **Реалистичный ответ на стикеры (50 / 50):**
-  - В **50% случаев** отвечает реплаем **только стикером / RP / реакцией без текста**.
-  - В **50% случаев** сопровождает стикер короткой живой репликой.
-  - **Контекстуальный подбор:** Бот не копирует слепо тот же стикер, а выбирает дополняющий по эмоции стикер из сохранённой библиотеки!
-
-### 5. 🫂 Двусторонний интерактивный RP-движок
-- Поддержка действий: `обнять`, `поцеловать`, `погладить`, `лизнуть`, `потискать`, `кусь`, `чай`, `покормить` и др.
-- Распознавание входящих RP-команд и генерация ответных действий через `<tg-rp action="..."/>`.
-
-### 6. 🧠 Долговременная RAG-память & Мультимодальность
-- Персистентная память фактов и предпочтений в `memories/`.
-- Авто-анализ прикреплённых изображений, фото и файлов с кодом (`.py`, `.js`, `.json`, `.sql`, `.md` и др.).
-- Автоматическое системное уведомление в Telegram при перезапуске бота.
-
----
-
-## 📁 Структура проекта
-
-```
-geminka-agent/
-├── app/
-│   ├── core/               # Конфигурация, сессии, логирование и контекст
-│   │   ├── config.py
-│   │   ├── context.py
-│   │   ├── sessions.py
-│   │   └── logger.py
-│   ├── engines/            # Эмоциональное ядро, адаптация и RP-движок
-│   │   ├── emotional.py
-│   │   ├── adaptive.py
-│   │   └── rp.py
-│   ├── services/           # Broadcaster, Antigravity OMP мост, сборщик ассетов, RAG и стриминг
-│   │   ├── broadcaster.py
-│   │   ├── antigravity.py
-│   │   ├── harvester.py
-│   │   ├── rag.py
-│   │   └── streamer.py
-│   ├── bot/                # Маршрутизация, хендлеры, мидлвари и хелперы
-│   │   ├── handlers.py
-│   │   ├── middlewares.py
-│   │   └── helpers.py
-│   └── main.py             # Главный модуль приложения
-├── data/                   # Данные, стикерпаки и шаблоны схем
-│   ├── bot_stickers.json
-│   ├── user_assets.json
-│   └── *.example.json
-├── main.py                 # Корневая точка входа
-├── bot.py                  # Обёртка обратной совместимости
-├── run.sh                  # Скрипт запуска через uv
-├── Dockerfile              # Мульти-стейдж Dockerfile с uv
-├── docker-compose.yml      # Оркестрация контейнера
-├── pyproject.toml          # Спецификация проекта и зависимости uv
-├── uv.lock                 # Зафиксированные версии пакетов
-├── README.md               # Документация проекта
-├── PERSONA.md              # Профиль личности Коломбины
-├── LICENSE                 # Лицензия MIT
-├── assets/                 # Медиа и фото Коломбины
-├── memories/               # RAG база знаний и предпочтений
-└── system_prompt.txt       # Динамический системный промпт
+```text
+Telegram updates
+      │
+      ▼
+deny-by-default middleware ──► handlers / per-user lock
+                                      │
+                         ┌────────────┼────────────┐
+                         ▼            ▼            ▼
+                    OMP transport  SQLite state  local profile JSON
+                         │        (dialogue,      (emotions/assets,
+                         ▼         prefs, memory)  atomic writes)
+                  /v1/chat/completions
 ```
 
----
+Ключевые свойства:
 
-## 🚀 Установка и быстрый старт
+- доступ закрыт по умолчанию; публичный режим включается только явным флагом;
+- нет доступа к локальной Antigravity IDE, её conversations или инструментам;
+- диалоги, model/reasoning overrides и `/remember` хранятся в SQLite отдельно для каждого user ID;
+- память ограничена по размеру и фильтрует prompt injection/невидимый Unicode;
+- OMP retry выполняется только до первого полученного токена, поэтому частичный ответ не дублируется;
+- длинные ответы делятся на Telegram-сообщения, вложения ограничены по размеру и удаляются после чтения;
+- контейнер запускается не от root, образы закреплены digest-ами, OMP используется как readiness dependency.
 
-### 1. Клонирование репозитория
-```bash
-git clone https://github.com/SkrudjReal/geminka-agent.git
-cd geminka-agent
-```
+## Быстрый запуск
 
-### 2. Конфигурация `.env`
-Скопируйте пример файла конфигурации:
+Требования: Python 3.10+ и [uv](https://docs.astral.sh/uv/), работающий OMP Gateway с OpenAI-compatible endpoints `/v1/models` и `/v1/chat/completions`.
+
 ```bash
 cp .env.example .env
-```
-
-Заполните переменные:
-```env
-TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
-TELEGRAM_ALLOWED_USERS=123456789
-OMP_BASE_URL=http://127.0.0.1:4000/v1
-DEFAULT_MODEL=flash
-```
-
-### 3. Запуск бота
-
-#### 🐳 Вариант A: Через Docker Compose (Изолированный, в 1 команду)
-```bash
-# Сборка и запуск контейнера в фоне
-docker compose up -d --build
-
-# Просмотр логов в реальном времени
-docker compose logs -f
-
-# Остановка
-docker compose down
-```
-
-#### ⚡ Вариант B: Через `uv` (Ультрабыстрый локальный)
-`uv` автоматически создаст окружение и установит зависимости за доли секунды:
-```bash
-# Установка зависимостей и запуск одной командой
-uv run bot.py
-
-# Или через готовый скрипт запуска
-./run.sh
-
-# Запуск в фоновом режиме (daemon)
-nohup uv run main.py > bot.log 2>&1 &
-```
-
-#### 🐍 Вариант C: Синхронизация через `uv sync`
-```bash
-uv sync
+uv sync --frozen --all-groups
 uv run main.py
 ```
 
----
+Минимальная приватная конфигурация:
 
-## 💬 Команды бота в Telegram
+```env
+TELEGRAM_BOT_TOKEN=123456789:token
+TELEGRAM_ALLOWED_USERS=123456789
+TELEGRAM_OWNER_ID=123456789
+TELEGRAM_ALLOW_ALL_USERS=false
+OMP_BASE_URL=http://127.0.0.1:4000/v1
+OMP_API_KEY=
+DEFAULT_MODEL=flash
+```
 
-- `/start` — Приветствие и справка по возможностям.
-- `/mood` — Текущее настроение, уровень энергии, теплоты и глубина отношений.
-- `/model` — Информация о текущей нейросетевой модели.
-- `/status` — Статус подключения к шлюзу и сессии.
-- `/new` — Сброс текущей сессии диалога и очистка контекста.
+Если allowlist пуст и `TELEGRAM_ALLOW_ALL_USERS` не равен `true`, приложение завершится с ненулевым кодом. Для Docker Gateway на хосте обычно задайте:
 
----
+```env
+OMP_BASE_URL=http://host.docker.internal:4000/v1
+```
 
-## 📄 Лицензия
+Запуск контейнера:
 
-Проект распространяется под лицензией [MIT](LICENSE).
+```bash
+docker compose up -d --build
+docker compose logs -f geminka-agent
+```
+
+## Команды
+
+- `/model` — выбрать модель;
+- `/reasoning` — выбрать `low`, `medium` или `high`;
+- `/memory` и `/remember` — посмотреть или добавить личные факты;
+- `/new` — очистить диалог и model/reasoning overrides;
+- `/mood` — эмоциональный профиль;
+- `/status` — доступность OMP и текущие настройки.
+
+## Состояние и миграция
+
+Новый state boundary — `data/state.db` (SQLite WAL). Старые `data/sessions.json` и записи в `memories/facts.json` не удаляются и не импортируются автоматически: `MEMORY.md`/`facts.json` читаются только как общие проектные заметки, а новые пользовательские факты пишутся только в SQLite. Резервируйте `data/state.db*` вместе с JSON-профилями.
+
+## Проверки
+
+```bash
+uv run ruff check .
+uv run pytest
+bash -n run.sh
+```
+
+CI выполняет lint и тесты на каждый push и pull request.
+
+## Лицензия
+
+[MIT](LICENSE)

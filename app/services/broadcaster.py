@@ -8,10 +8,9 @@ Inspired by standard Aiogram 3 broadcaster patterns (Latand template):
 
 import asyncio
 import logging
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, Optional, Union
 
-from aiogram import Bot
-from aiogram import exceptions
+from aiogram import Bot, exceptions
 from aiogram.enums import ParseMode
 from aiogram.types import (
     ForceReply,
@@ -30,6 +29,7 @@ async def send_message(
     parse_mode: Optional[str] = ParseMode.HTML,
     disable_notification: bool = False,
     reply_markup: Optional[Union[InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, ForceReply]] = None,
+    retry_flood_once: bool = True,
 ) -> bool:
     """Safely sends a message to a specific user handling all Telegram API exceptions."""
     target_id = int(user_id) if str(user_id).isdigit() else user_id
@@ -47,6 +47,8 @@ async def send_message(
         logger.warning(f"Target [ID:{target_id}]: chat not found (TelegramNotFound).")
     except exceptions.TelegramRetryAfter as e:
         logger.warning(f"Target [ID:{target_id}]: Flood limit exceeded. Sleeping for {e.retry_after}s.")
+        if not retry_flood_once:
+            return False
         await asyncio.sleep(e.retry_after)
         return await send_message(
             bot=bot,
@@ -55,6 +57,7 @@ async def send_message(
             parse_mode=parse_mode,
             disable_notification=disable_notification,
             reply_markup=reply_markup,
+            retry_flood_once=False,
         )
     except exceptions.TelegramBadRequest as e:
         logger.error(f"Target [ID:{target_id}]: TelegramBadRequest: {e.message}")

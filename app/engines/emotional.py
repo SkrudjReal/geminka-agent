@@ -7,15 +7,14 @@ Tracks:
 - Energy & affection levels
 """
 
-import json
 import logging
-import random
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from app.core import config
+from app.core.files import atomic_write_json, load_json
 
 logger = logging.getLogger("geminka-emotions")
 
@@ -77,24 +76,21 @@ class EmotionalEngine:
     def load(self) -> None:
         if self.state_file.exists():
             try:
-                with open(self.state_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    valid_fields = {f.name for f in fields(EmotionalState)}
-                    for uid_str, s_dict in data.items():
-                        # Fill any missing fields gracefully
-                        if "warmth" not in s_dict:
-                            s_dict["warmth"] = 80
-                        filtered_dict = {k: v for k, v in s_dict.items() if k in valid_fields}
-                        self.states[uid_str] = EmotionalState(**filtered_dict)
+                data = load_json(self.state_file, {})
+                valid_fields = {f.name for f in fields(EmotionalState)}
+                for uid_str, s_dict in data.items():
+                    if "warmth" not in s_dict:
+                        s_dict["warmth"] = 80
+                    filtered_dict = {k: v for k, v in s_dict.items() if k in valid_fields}
+                    self.states[uid_str] = EmotionalState(**filtered_dict)
                 logger.info(f"Loaded emotional states for {len(self.states)} users.")
             except Exception as e:
                 logger.warning(f"Failed to load emotional states: {e}")
 
     def save(self) -> None:
         try:
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                data = {uid: asdict(state) for uid, state in self.states.items()}
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            data = {uid: asdict(state) for uid, state in self.states.items()}
+            atomic_write_json(self.state_file, data)
         except Exception as e:
             logger.warning(f"Failed to save emotional states: {e}")
 

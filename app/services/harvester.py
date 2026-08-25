@@ -7,13 +7,13 @@ Collects, catalogs, and stores:
 Allows Columbina to dynamically mirror and use the user's own custom emojis and sticker packs!
 """
 
-import json
 import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.core import config
+from app.core.files import atomic_write_json, load_json
 
 logger = logging.getLogger("geminka-assets")
 
@@ -34,11 +34,10 @@ class AssetHarvester:
     def load(self) -> None:
         if self.storage_file.exists():
             try:
-                with open(self.storage_file, "r", encoding="utf-8") as f:
-                    saved = json.load(f)
-                    for k in ["custom_emojis", "stickers", "sticker_packs", "user_preferences"]:
-                        if k in saved:
-                            self.data[k] = saved[k]
+                saved = load_json(self.storage_file, {})
+                for k in ["custom_emojis", "stickers", "sticker_packs", "user_preferences"]:
+                    if k in saved:
+                        self.data[k] = saved[k]
                 logger.info(
                     f"AssetHarvester loaded {len(self.data['custom_emojis'])} custom emojis, "
                     f"{len(self.data['stickers'])} stickers, {len(self.data['sticker_packs'])} packs."
@@ -48,8 +47,7 @@ class AssetHarvester:
 
     def save(self) -> None:
         try:
-            with open(self.storage_file, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self.storage_file, self.data)
         except Exception as e:
             logger.warning(f"Failed to save user assets: {e}")
 
@@ -162,26 +160,19 @@ class AssetHarvester:
         """Returns the most active custom emojis for the user (or global ones)."""
         uid_str = str(user_id)
         user_emojis = []
-        global_emojis = []
-
-        for cid, item in self.data["custom_emojis"].items():
+        for item in self.data["custom_emojis"].values():
             if uid_str in item.get("users", []):
                 user_emojis.append(item)
-            else:
-                global_emojis.append(item)
 
         # Sort by usage count descending
         user_emojis.sort(key=lambda x: (x.get("count", 0), x.get("last_used", 0)), reverse=True)
-        global_emojis.sort(key=lambda x: (x.get("count", 0), x.get("last_used", 0)), reverse=True)
-
-        combined = (user_emojis + global_emojis)[:limit]
-        return combined
+        return user_emojis[:limit]
 
     def get_user_stickers(self, user_id: int) -> List[Dict[str, Any]]:
         """Returns all collected stickers sent by the user, sorted by recency and count."""
         uid_str = str(user_id)
         u_stickers = []
-        for fid, item in self.data["stickers"].items():
+        for item in self.data["stickers"].values():
             if uid_str in item.get("users", []):
                 u_stickers.append(item)
 
@@ -233,10 +224,6 @@ class AssetHarvester:
     ) -> Optional[str]:
         """Finds the best matching sticker file_id from the user's collected stickers."""
         stickers = self.get_user_stickers(user_id)
-        if not stickers:
-            # Fallback to any collected user stickers
-            stickers = list(self.data["stickers"].values())
-
         if not stickers:
             return None
 

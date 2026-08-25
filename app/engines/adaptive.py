@@ -4,14 +4,14 @@ Analyzes the user's psychological archetype, tone, verbosity, and communication 
 Guides Columbina to intuitively adapt, mirror vocabulary/slang, and find the perfect personal resonance with each user.
 """
 
-import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from app.core import config
+from app.core.files import atomic_write_json, load_json
 
 logger = logging.getLogger("geminka-adaptive")
 
@@ -70,19 +70,17 @@ class AdaptiveEngine:
     def load(self) -> None:
         if self.state_file.exists():
             try:
-                with open(self.state_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    for uid, p in data.items():
-                        self.profiles[uid] = UserPsychotypeProfile(**p)
+                data = load_json(self.state_file, {})
+                for uid, p in data.items():
+                    self.profiles[uid] = UserPsychotypeProfile(**p)
                 logger.info(f"AdaptiveEngine loaded profiles for {len(self.profiles)} users.")
             except Exception as e:
                 logger.warning(f"Failed to load adaptive profiles: {e}")
 
     def save(self) -> None:
         try:
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                data = {uid: asdict(prof) for uid, prof in self.profiles.items()}
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            data = {uid: asdict(prof) for uid, prof in self.profiles.items()}
+            atomic_write_json(self.state_file, data)
         except Exception as e:
             logger.warning(f"Failed to save adaptive profiles: {e}")
 

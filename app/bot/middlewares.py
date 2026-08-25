@@ -21,11 +21,8 @@ class OwnerAuthMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        if not config.ALLOWED_USERS:
-            return await handler(event, data)
-
         user = data.get("event_from_user")
-        if user and user.id not in config.ALLOWED_USERS:
+        if not user or not config.settings.is_user_allowed(user.id):
             if isinstance(event, types.Message):
                 try:
                     await event.answer(
@@ -34,11 +31,18 @@ class OwnerAuthMiddleware(BaseMiddleware):
                     )
                 except Exception:
                     pass
-            logger.warning(f"Blocked unauthorized access attempt from user {user.id} ({user.full_name})")
+            elif isinstance(event, types.CallbackQuery):
+                try:
+                    await event.answer("Доступ ограничен.", show_alert=True)
+                except Exception:
+                    pass
+            if user:
+                logger.warning("Blocked unauthorized access attempt from user %s", user.id)
             return
 
         return await handler(event, data)
 
 
 def check_auth(user_id: int) -> bool:
-    return not config.ALLOWED_USERS or user_id in config.ALLOWED_USERS
+    """Compatibility helper for handlers; authorization remains fail-closed."""
+    return config.settings.is_user_allowed(user_id)

@@ -1,11 +1,8 @@
 """Telegram bot command and message handlers for Geminka."""
 
 import html
-import json
 import logging
 import random
-from pathlib import Path
-from typing import Dict, List, Optional
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
@@ -21,21 +18,18 @@ from aiogram.utils.chat_action import ChatActionSender
 from app.bot.helpers import extract_message_context, send_response
 from app.bot.middlewares import check_auth
 from app.core import config
-from app.core.sessions import session_manager
+from app.core.concurrency import user_locks
 from app.engines.adaptive import adaptive_engine
 from app.engines.emotional import MOOD_DEFINITIONS, emotion_engine
 from app.engines.rp import detect_rp_command, get_random_rp_phrase
 from app.services.antigravity import AVAILABLE_MODELS, AntigravityClient
 from app.services.harvester import asset_harvester
-from app.services.rag import rag_engine
+from app.services.rag import MemoryRejected, rag_engine
 from app.services.streamer import TelegramStreamConsumer, md_to_telegram_html
 
 logger = logging.getLogger("geminka-handlers")
 
 router = Router()
-client = AntigravityClient()
-
-
 # --- Telegram Reactions Handler ---
 @router.message_reaction()
 async def handle_message_reaction(event: types.MessageReactionUpdated, bot: Bot):
@@ -84,7 +78,7 @@ async def cmd_start(message: types.Message):
 
 
 @router.message(Command("model", "models"))
-async def cmd_model(message: types.Message):
+async def cmd_model(message: types.Message, antigravity_client: AntigravityClient):
     if not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
@@ -101,14 +95,14 @@ async def cmd_model(message: types.Message):
         else:
             new_model = "google-antigravity/gemini-3.7-flash"
 
-        client.set_user_model(message.from_user.id, new_model)
+        antigravity_client.set_user_model(message.from_user.id, new_model)
         msg_html = md_to_telegram_html(
             f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Модель успешно изменена на:**\n`{new_model}`'
         )
         await message.answer(msg_html, parse_mode=ParseMode.HTML)
         return
 
-    current = client.get_user_model(message.from_user.id)
+    current = antigravity_client.get_user_model(message.from_user.id)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -141,7 +135,7 @@ async def cmd_model(message: types.Message):
     text = (
         f'<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Выбор активной модели:**\n\n'
         f"• **Текущая модель:** `{current}`\n"
-        f"• **Reasoning Effort:** `{client.get_user_reasoning(message.from_user.id)}`\n"
+        f"• **Reasoning Effort:** `{antigravity_client.get_user_reasoning(message.from_user.id)}`\n"
         f"• **Max Output Tokens:** `{config.MAX_OUTPUT_TOKENS}`\n\n"
         f"Выбери желаемую модель кнопкой ниже или напиши `/model sonnet` / `/model flash`:"
     )
@@ -149,9 +143,12 @@ async def cmd_model(message: types.Message):
 
 
 @router.callback_query(F.data.startswith("set_model:"))
-async def process_set_model(callback: types.CallbackQuery):
+async def process_set_model(callback: types.CallbackQuery, antigravity_client: AntigravityClient):
     model_name = callback.data.split(":", 1)[1]
-    client.set_user_model(callback.from_user.id, model_name)
+    if model_name not in AVAILABLE_MODELS:
+        await callback.answer("Неизвестная модель", show_alert=True)
+        return
+    antigravity_client.set_user_model(callback.from_user.id, model_name)
     await callback.answer(f"Модель выбрана: {model_name}")
     try:
         msg_html = md_to_telegram_html(
@@ -163,7 +160,7 @@ async def process_set_model(callback: types.CallbackQuery):
 
 
 @router.message(Command("reasoning", "effort", "thinking"))
-async def cmd_reasoning(message: types.Message):
+async def cmd_reasoning(message: types.Message, antigravity_client: AntigravityClient):
     if not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
@@ -178,14 +175,14 @@ async def cmd_reasoning(message: types.Message):
         else:
             new_effort = "medium"
 
-        client.set_user_reasoning(message.from_user.id, new_effort)
+        antigravity_client.set_user_reasoning(message.from_user.id, new_effort)
         msg_html = md_to_telegram_html(
             f'<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Уровень Reasoning Effort установлен на:** `{new_effort}`'
         )
         await message.answer(msg_html, parse_mode=ParseMode.HTML)
         return
 
-    current = client.get_user_reasoning(message.from_user.id)
+    current = antigravity_client.get_user_reasoning(message.from_user.id)
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -222,9 +219,12 @@ async def cmd_reasoning(message: types.Message):
 
 
 @router.callback_query(F.data.startswith("set_reasoning:"))
-async def process_set_reasoning(callback: types.CallbackQuery):
+async def process_set_reasoning(callback: types.CallbackQuery, antigravity_client: AntigravityClient):
     effort_val = callback.data.split(":", 1)[1]
-    client.set_user_reasoning(callback.from_user.id, effort_val)
+    if effort_val not in {"low", "medium", "high"}:
+        await callback.answer("Неизвестный уровень", show_alert=True)
+        return
+    antigravity_client.set_user_reasoning(callback.from_user.id, effort_val)
     await callback.answer(f"Reasoning установлен: {effort_val}")
     try:
         msg_html = md_to_telegram_html(
@@ -274,13 +274,12 @@ async def cmd_mood(message: types.Message):
 
 
 @router.message(Command("new", "reset"))
-async def cmd_new(message: types.Message):
+async def cmd_new(message: types.Message, antigravity_client: AntigravityClient):
     if not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
 
-    session_manager.remove(message.from_user.id)
-    client.clear_history(message.from_user.id)
+    antigravity_client.clear_history(message.from_user.id)
     await message.answer("✨ Контекст и история сброшены! Начинаем диалог с чистого листа.")
 
 
@@ -290,11 +289,11 @@ async def cmd_memory(message: types.Message):
         await message.answer("⛔ Доступ ограничен.")
         return
 
-    all_mems = rag_engine.get_all_memories_list()
+    all_mems = rag_engine.get_all_memories_list(message.from_user.id)
     total = len(all_mems)
 
     preview_items = []
-    for i, mem in enumerate(all_mems[:6], 1):
+    for mem in all_mems[:6]:
         clean_item = mem.strip().replace("\n", " ")
         if len(clean_item) > 120:
             clean_item = clean_item[:117] + "..."
@@ -303,9 +302,9 @@ async def cmd_memory(message: types.Message):
     preview_text = "\n".join(preview_items) or "Пока нет сохранённых записей."
 
     text = (
-        f'<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Долговременная RAG Память:**\n\n'
+        f'<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Личная долговременная память:**\n\n'
         f"• **Всего фрагментов памяти:** `{total}`\n"
-        f"• **Источники:** `Hermes Memories (USER.md, MEMORY.md) + Local RAG`\n"
+        f"• **Хранилище:** `SQLite, изоляция по Telegram user ID`\n"
         f"• **Sliding Context Window:** `Active (15 turns / 24k chars)`\n\n"
         f"🧠 **Примеры сохранённых фактов:**\n"
         f"{preview_text}\n\n"
@@ -329,30 +328,37 @@ async def cmd_remember(message: types.Message):
         return
 
     fact_text = args[0].strip()
-    rag_engine.add_memory(fact_text, category="user_custom")
+    try:
+        added = rag_engine.add_memory(message.from_user.id, fact_text, category="user_custom")
+    except MemoryRejected as exc:
+        await message.answer(f"⚠️ {html.escape(str(exc))}", parse_mode=ParseMode.HTML)
+        return
+    if not added:
+        await message.answer("Этот факт уже сохранён.")
+        return
 
     await message.answer(
-        f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Запомнила и зафиксировала в RAG памяти:**\n> {fact_text}',
+        f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> <b>Запомнила:</b>\n<blockquote>{html.escape(fact_text)}</blockquote>',
         parse_mode=ParseMode.HTML,
     )
 
 
 @router.message(Command("status"))
-async def cmd_status(message: types.Message):
+async def cmd_status(message: types.Message, antigravity_client: AntigravityClient):
     if not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
 
-    is_omp_alive = await client.check_omp_health()
-    current_model = client.get_user_model(message.from_user.id)
-    current_reasoning = client.get_user_reasoning(message.from_user.id)
+    is_omp_alive = await antigravity_client.check_omp_health()
+    current_model = antigravity_client.get_user_model(message.from_user.id)
+    current_reasoning = antigravity_client.get_user_reasoning(message.from_user.id)
     state = emotion_engine.get_state(message.from_user.id)
-    total_memories = len(rag_engine.chunks)
+    total_memories = rag_engine.count(message.from_user.id)
 
     engine_status = (
         f"🟢 OMP Gateway (`{config.OMP_BASE_URL}`) [Active]"
         if is_omp_alive
-        else "🟡 Local Antigravity Engine (Fallback Active)"
+        else "🔴 OMP Gateway недоступен"
     )
 
     status_text = (
@@ -361,9 +367,9 @@ async def cmd_status(message: types.Message):
         f"• **Активная модель:** `{current_model}`\n"
         f"• **Reasoning Effort:** `{current_reasoning}`\n"
         f"• **Sliding Context Window:** `15 turns / 24k chars`\n"
-        f"• **RAG Память:** `{total_memories} фрагментов (Hermes + Local)`\n"
+        f"• **Личная память:** `{total_memories} записей в SQLite`\n"
         f"• **Теплота:** `{state.warmth}/100` | **Отношения:** `{state.get_relationship_stage()}`\n"
-        f"• **Авторизация:** `Google Antigravity OAuth (Active)`"
+        f"• **Авторизация:** `Telegram allowlist + OMP API key`"
     )
     await send_response(message, status_text)
 
@@ -375,21 +381,25 @@ async def cmd_help(message: types.Message):
         return
 
     help_text = (
-        f'<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Доступные команды:**\n\n'
+        '<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Доступные команды:**\n\n'
         "• `/model` — выбор модели (Gemini 3.7 / Claude Sonnet / Claude Opus)\n"
         "• `/reasoning` — настройка глубины размышлений (low, medium, high)\n"
         "• `/memory` — посмотреть долговременную память и факты\n"
         "• `/remember` — добавить новый факт в память\n"
         "• `/mood` — текущее настроение, теплота и статус отношений\n"
         "• `/new` — сбросить контекст диалога\n"
-        "• `/status` — статус OMP Gateway, RAG памяти и параметров\n\n"
+        "• `/status` — статус OMP Gateway, памяти и параметров\n\n"
         "Ставь реакции, отправляй стикеры, файлы или цитируй сообщения реплаем — всё учитывается!"
     )
     await send_response(message, help_text)
 
 
 @router.message()
-async def handle_any_message(message: types.Message, bot: Bot):
+async def handle_any_message(
+    message: types.Message,
+    bot: Bot,
+    antigravity_client: AntigravityClient,
+):
     if not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
@@ -463,13 +473,6 @@ async def handle_any_message(message: types.Message, bot: Bot):
     user_emojis_context = asset_harvester.format_emojis_prompt_context(message.from_user.id)
 
     user_id = message.from_user.id
-    convo_id = session_manager.get(user_id)
-
-    if not convo_id or not client.get_transcript_path(convo_id).exists():
-        convo_id = client.get_latest_conversation_id()
-        if convo_id:
-            session_manager.set(user_id, convo_id)
-
     # Create live stream consumer
     consumer = TelegramStreamConsumer(
         bot=bot,
@@ -482,14 +485,15 @@ async def handle_any_message(message: types.Message, bot: Bot):
     )
 
     try:
-        async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
-            stream_gen = client.generate_stream(
+        async with user_locks.get(user_id), ChatActionSender.typing(
+            bot=bot, chat_id=message.chat.id
+        ):
+            stream_gen = antigravity_client.generate_stream(
                 user_id=message.from_user.id,
                 prompt=raw_user_content,
                 emotional_context=emotional_context,
                 adaptive_context=adaptive_context,
                 user_emojis_context=user_emojis_context,
-                conversation_id=convo_id,
             )
             await consumer.stream_from_generator(stream_gen)
     except Exception as e:
