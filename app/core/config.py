@@ -188,6 +188,15 @@ EMOTIONAL_STATE_FILE = DATA_DIR / "emotional_state.json"
 ADAPTIVE_STATE_FILE = DATA_DIR / "adaptive_profiles.json"
 PROMPT_FILE = BASE_DIR / "system_prompt.txt"
 
+LINUX_LS_BIN = Path(
+    "/home/velunae/.antigravity-ide-server/bin/2.5.5-ecfbad74d93962fc8ca485d93ab9b4f3d4cb6cf8/extensions/antigravity/bin/language_server_linux_x64"
+)
+WIN_LS_BIN = Path(
+    r"C:\Users\velun\AppData\Local\Programs\antigravity\resources\app\extensions\antigravity\bin\language_server_windows_x64.exe"
+)
+LINUX_BRAIN_DIR = Path("/home/velunae/.gemini/antigravity-ide/brain")
+WIN_BRAIN_DIR = Path(r"C:\Users\velun\.gemini\antigravity-ide\brain")
+
 SYSTEM_PROMPT_DEFAULT = (
     "Ты — Geminka (Columbina), живая, умная, эмоциональная девушка-ассистент."
 )
