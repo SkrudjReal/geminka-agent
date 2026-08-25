@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -12,6 +13,7 @@ from app.core import config
 from app.core.logger import setup_logging
 from app.services.antigravity import AntigravityClient
 from app.services.broadcaster import broadcast
+from app.services.omp_gateway import start_omp_gateway_task
 
 logger = logging.getLogger("geminka-main")
 
@@ -23,23 +25,38 @@ async def main() -> None:
     config.settings.validate_startup()
     config.ensure_runtime_dirs()
 
-    bot = Bot(token=config.settings.bot_token)
+    # 2. Auto-start built-in Antigravity OMP SSE Gateway if not running
+    omp_server = None
+    omp_task = None
     antigravity_client = AntigravityClient()
+
+    if not await antigravity_client.check_omp_health():
+        parsed = urlparse(config.settings.omp_base_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 4000
+        logger.info("Local OMP Gateway is offline. Auto-launching built-in Antigravity OMP SSE Gateway on %s:%d...", host, port)
+        try:
+            omp_server, omp_task = await start_omp_gateway_task(host=host, port=port)
+            logger.info("Built-in Antigravity OMP SSE Gateway is ONLINE on %s", config.settings.omp_base_url)
+        except Exception as e:
+            logger.warning("Could not auto-start OMP Gateway: %s", e)
+
+    bot = Bot(token=config.settings.bot_token)
     dp = Dispatcher(antigravity_client=antigravity_client)
 
-    # 2. Outer middleware registration
+    # 3. Outer middleware registration
     auth_mw = OwnerAuthMiddleware()
     dp.message.outer_middleware(auth_mw)
     dp.callback_query.outer_middleware(auth_mw)
     dp.message_reaction.outer_middleware(auth_mw)
 
-    # 3. Include handler routes
+    # 4. Include handler routes
     dp.include_router(router)
 
     logger.info("Starting Geminka Telegram Bot (OMP Gateway + Streaming + Clean Architecture)...")
     await bot.delete_webhook(drop_pending_updates=False)
 
-    # 4. Safe startup notification via dedicated broadcaster service
+    # 5. Safe startup notification via dedicated broadcaster service
     targets = set(config.settings.allowed_users)
 
     startup_text = (
@@ -57,10 +74,14 @@ async def main() -> None:
             parse_mode=ParseMode.HTML,
         )
 
-    # 5. Start update polling
+    # 6. Start update polling
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        if omp_server:
+            omp_server.should_exit = True
+        if omp_task:
+            omp_task.cancel()
         await antigravity_client.aclose()
         await bot.session.close()
 
