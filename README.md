@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Columbina Banner](https://raw.githubusercontent.com/SkrudjReal/geminka-agent/main/assets/columbina_avatar.jpg)
+![Columbina Banner](https://raw.githubusercontent.com/SkrudjReal/geminka-agent/main/assets/columbina_with_kuukhenki.jpg)
 
 **Живая, умная и эмоциональная ИИ-спутница для Telegram**  
 *Создана с нежностью и архитектурной строгостью на базе Google Antigravity & Open Multi-Provider (OMP)*
