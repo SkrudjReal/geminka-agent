@@ -43,7 +43,18 @@ else
     pip install -q -e .
 fi
 
-# --- 2. Interactive Authorization & Configuration Wizard ---
+# --- 2. Build Open-Antigravity Gateway if needed ---
+GATEWAY_DIR="$SCRIPT_DIR/tools/open-antigravity"
+GATEWAY_DIST="$GATEWAY_DIR/dist/index.js"
+
+if [ ! -f "$GATEWAY_DIST" ] && [ -d "$GATEWAY_DIR" ]; then
+    if command -v npm >/dev/null 2>&1; then
+        echo "🔹 Компиляция TypeScript шлюза open-antigravity..."
+        (cd "$GATEWAY_DIR" && npm install --silent && npm run build --silent) || true
+    fi
+fi
+
+# --- 3. Interactive Authorization & Configuration Wizard ---
 ENV_FILE="$SCRIPT_DIR/.env"
 ENV_EXAMPLE="$SCRIPT_DIR/.env.example"
 
@@ -77,7 +88,7 @@ CURRENT_TOKEN=$(get_env_val "TELEGRAM_BOT_TOKEN")
 CURRENT_USERS=$(get_env_val "TELEGRAM_ALLOWED_USERS")
 
 # If token is default placeholder or empty, prompt interactively
-if [ -z "$CURRENT_TOKEN" ] || [ "$CURRENT_TOKEN" = "your_bot_token_here" ]; then
+if [ -z "$CURRENT_TOKEN" ] || [ "$CURRENT_TOKEN" = "your_telegram_bot_token_here" ] || [ "$CURRENT_TOKEN" = "your_bot_token_here" ]; then
     echo ""
     echo "🔑 --- Первоначальная настройка авторизации Telegram бота ---"
     read -r -p "👉 Введите Telegram Bot Token (получить в @BotFather): " INPUT_TOKEN
@@ -119,7 +130,7 @@ if [ -z "$(get_env_val "MAX_OUTPUT_TOKENS")" ]; then
     set_env_val "MAX_OUTPUT_TOKENS" "8192"
 fi
 
-# --- 3. OMP Gateway Health Check & Auto-Launch ---
+# --- 4. OMP Gateway Health Check & Auto-Launch ---
 OMP_URL=$(get_env_val "OMP_BASE_URL")
 [ -z "$OMP_URL" ] && OMP_URL="http://127.0.0.1:4000/v1"
 
@@ -144,10 +155,9 @@ if is_omp_alive "$OMP_URL"; then
 else
     echo "🟡 OMP Gateway не отвечает. Пробуем автоматически поднять шлюз..."
     
-    GATEWAY_SCRIPT="$SCRIPT_DIR/tools/open-antigravity/dist/index.js"
-    if [ -f "$GATEWAY_SCRIPT" ] && command -v node >/dev/null 2>&1; then
+    if [ -f "$GATEWAY_DIST" ] && command -v node >/dev/null 2>&1; then
         echo "🚀 Запуск Open-Antigravity OMP Gateway на порту 4000..."
-        PORT=4000 HOST=127.0.0.1 nohup node "$GATEWAY_SCRIPT" >/tmp/omp_gateway.log 2>&1 &
+        PORT=4000 HOST=127.0.0.1 nohup node "$GATEWAY_DIST" >/tmp/omp_gateway.log 2>&1 &
         OMP_PID=$!
         echo "🔹 PID фонового OMP Gateway: $OMP_PID (логи: /tmp/omp_gateway.log)"
         
@@ -162,14 +172,13 @@ else
     fi
 
     if ! is_omp_alive "$OMP_URL"; then
-        echo "⚠️  Внимание: OMP Gateway на $OMP_URL пока не отвечает."
-        echo "    Бот запустится и будет ждать подключения к шлюзу."
+        echo "⚠️  Внимание: OMP Gateway на $OMP_URL поднимется автоматически через main.py."
     fi
 fi
 
-# --- 4. Launching Geminka ---
+# --- 5. Launching Geminka ---
 echo ""
-echo "🚀 Запуск Geminka Telegram Bot..."
+echo "🚀 Запуск Geminka Telegram Bot (Columbina)..."
 echo "================================================================="
 
 cleanup() {
