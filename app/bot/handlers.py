@@ -481,7 +481,7 @@ async def handle_any_message(
         target_message_id=message.message_id,
         target_user_mention=user_mention,
         edit_interval=0.8,
-        cursor=" ▉",
+        cursor=' <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>',
     )
 
     try:

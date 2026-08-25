@@ -369,10 +369,17 @@ def strip_think_tags(text: str) -> str:
     return cleaned.strip()
 
 
+INCOMPLETE_CONTROL_TAG_RE = re.compile(
+    r"<(?:tg-[a-z\-]+|think|thought|reasoning|THINKING)[^>]*$",
+    re.IGNORECASE,
+)
+
+
 def strip_delivery_tags(text: str) -> str:
-    """Remove model control tags from Telegram-visible text."""
+    """Remove model control tags and incomplete/half-typed control tags from Telegram-visible text."""
     for pattern in (STICKER_TAG_RE, REACT_TAG_RE, REPLY_TAG_RE, RP_TAG_RE, PHOTO_PAIR_TAG_RE):
         text = pattern.sub("", text)
+    text = INCOMPLETE_CONTROL_TAG_RE.sub("", text)
     return text.strip()
 
 
@@ -387,7 +394,7 @@ class TelegramStreamConsumer:
         target_message_id: Optional[int] = None,
         target_user_mention: Optional[str] = None,
         edit_interval: float = 0.8,
-        cursor: str = " ▉",
+        cursor: str = ' <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>',
     ):
         self.bot = bot
         self.chat_id = chat_id

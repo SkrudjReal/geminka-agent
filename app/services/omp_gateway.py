@@ -347,6 +347,7 @@ async def start_omp_gateway_task(host: str = "127.0.0.1", port: int = 4000) -> t
         port=port,
         log_level="warning",
         access_log=False,
+        lifespan="off",
     )
     server = uvicorn.Server(uv_config)
     task = asyncio.create_task(server.serve())
@@ -365,6 +366,7 @@ async def start_omp_gateway(host: str = "127.0.0.1", port: int = 4000) -> None:
         port=port,
         log_level="warning",
         access_log=False,
+        lifespan="off",
     )
     server = uvicorn.Server(uv_config)
     logger.info("Starting Antigravity OMP SSE Gateway on http://%s:%d/v1", host, port)
