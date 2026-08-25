@@ -10,6 +10,12 @@ from aiogram import Bot, types
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
 from app.core import config
 from app.services.harvester import asset_harvester
 from app.services.streamer import md_to_telegram_html, split_telegram_text
@@ -45,6 +51,53 @@ async def download_telegram_file(bot: Bot, file_id: str, filename: str) -> Path:
         destination.unlink(missing_ok=True)
         raise ValueError("Файл превышает разрешённый размер.")
     return destination
+
+
+async def cache_sticker_file(bot: Bot, sticker: types.Sticker) -> Path:
+    """Downloads and caches Telegram sticker, converting static webp to PNG for vision analysis."""
+    config.STICKERS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    unique_id = sticker.file_unique_id or uuid.uuid4().hex
+
+    png_path = config.STICKERS_CACHE_DIR / f"{unique_id}.png"
+    if png_path.exists():
+        return png_path.resolve()
+
+    if sticker.is_animated:
+        ext = ".tgs"
+    elif sticker.is_video:
+        ext = ".webm"
+    else:
+        ext = ".webp"
+
+    raw_path = config.STICKERS_CACHE_DIR / f"{unique_id}{ext}"
+    if not raw_path.exists():
+        file_obj = await bot.get_file(sticker.file_id)
+        if file_obj.file_path:
+            await bot.download_file(file_obj.file_path, raw_path)
+
+    if ext == ".webp" and raw_path.exists():
+        try:
+            with Image.open(raw_path) as img:
+                img.save(png_path, "PNG")
+            return png_path.resolve()
+        except Exception as exc:
+            logger.warning("Could not convert sticker webp to png: %s", exc)
+            return raw_path.resolve()
+
+    return raw_path.resolve()
+
+
+async def cache_photo_file(bot: Bot, photo: types.PhotoSize) -> Path:
+    """Downloads and caches Telegram photo."""
+    config.PHOTOS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    unique_id = photo.file_unique_id or uuid.uuid4().hex
+    dest = config.PHOTOS_CACHE_DIR / f"{unique_id}.jpg"
+    if dest.exists():
+        return dest.resolve()
+    file_obj = await bot.get_file(photo.file_id)
+    if file_obj.file_path:
+        await bot.download_file(file_obj.file_path, dest)
+    return dest.resolve()
 
 
 def read_text_file_preview(path: Path, max_bytes: int = 65_536) -> str | None:
@@ -125,10 +178,29 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
             except (TelegramAPIError, OSError, ValueError) as exc:
                 parts.append(f"[Вложение в цитате недоступно: {exc}]")
         elif original.photo:
-            parts.append("[В цитате есть фото; vision-модель не настроена]")
+            try:
+                photo_path = await cache_photo_file(bot, original.photo[-1])
+                parts.append(f"[В цитате есть фото; локальный файл в кэше: {photo_path}]")
+            except Exception as exc:
+                logger.warning("Failed to cache quoted photo: %s", exc)
+                parts.append("[В цитате есть фото]")
+        elif original.sticker:
+            try:
+                stk_path = await cache_sticker_file(bot, original.sticker)
+                parts.append(
+                    f"[В цитате стикер: {original.sticker.emoji}; пак: {original.sticker.set_name or 'unknown'}; локальный файл в кэше: {stk_path}]"
+                )
+            except Exception as exc:
+                logger.warning("Failed to cache quoted sticker: %s", exc)
+                parts.append(f"[В цитате стикер: {original.sticker.emoji}; пак: {original.sticker.set_name or 'unknown'}]")
 
     if message.photo:
-        parts.append("[Пользователь прислал фото; vision-модель не настроена]")
+        try:
+            photo_path = await cache_photo_file(bot, message.photo[-1])
+            parts.append(f"[Пользователь прислал фото; локальный файл в кэше: {photo_path}]")
+        except Exception as exc:
+            logger.warning("Failed to cache photo: %s", exc)
+            parts.append("[Пользователь прислал фото]")
     elif message.document:
         try:
             parts.append(await _document_context(bot, message.document))
@@ -143,9 +215,24 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
             is_animated=message.sticker.is_animated,
             is_video=message.sticker.is_video,
         )
-        parts.append(
-            f"[Стикер: {message.sticker.emoji}; пак: {message.sticker.set_name or 'unknown'}]"
-        )
+        if message.sticker.set_name and message.sticker.set_name != "unknown":
+            asyncio.create_task(
+                asset_harvester.ingest_full_sticker_pack(
+                    bot,
+                    message.from_user.id,
+                    message.sticker.set_name,
+                )
+            )
+        try:
+            stk_path = await cache_sticker_file(bot, message.sticker)
+            parts.append(
+                f"[Стикер: {message.sticker.emoji}; пак: {message.sticker.set_name or 'unknown'}; локальный файл в кэше: {stk_path}]"
+            )
+        except Exception as exc:
+            logger.warning("Failed to cache sticker: %s", exc)
+            parts.append(
+                f"[Стикер: {message.sticker.emoji}; пак: {message.sticker.set_name or 'unknown'}]"
+            )
 
     if text := (message.text or message.caption or "").strip():
         parts.append(text)

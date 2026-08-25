@@ -46,15 +46,16 @@
         ┌──────────────────┼──────────────────┐
         ▼                  ▼                  ▼
 ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│  OMP Gateway │   │ SQLite Store │   │  Emotional & │
-│  SSE Stream  │   │  (WAL Mode)  │   │   Adaptive   │
+│ Direct OMP   │   │ SQLite Store │   │  Emotional & │
+│ SSE Gateway  │   │  (WAL Mode)  │   │   Adaptive   │
+│ Stream (/v1) │   │              │   │   Dynamics   │
 └───────┬──────┘   └───────┬──────┘   └───────┬──────┘
-        │ (Fallback)       │                  │
+        │                  │                  │
         ▼                  ▼                  ▼
 ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ Local Engine │   │ State / RAG  │   │ Psychotype & │
-│  (Language   │   │  Isolation   │   │  Roleplay    │
-│   Server)    │   │  per-User ID │   │   Dynamics   │
+│ Gemini 3.7 / │   │ State / RAG  │   │ Psychotype & │
+│ Claude Sonnet│   │  Isolation   │   │  Roleplay    │
+│  + Reasoning │   │  per-User ID │   │   Dynamics   │
 └──────────────┘   └──────────────┘   └──────────────┘
 ```
 
@@ -64,10 +65,10 @@
    * Если `TELEGRAM_ALLOWED_USERS` пуст, бот не запустится в публичном режиме без явного флага `TELEGRAM_ALLOW_ALL_USERS=true`.
    * Outer middleware защищает сообщения, callback-кнопки и реакции.
 
-2. **⚡ Двухуровневый транспорт генерации:**
-   * **Основной:** Высокоскоростной Server-Sent Events (SSE) стриминг через OpenAI-совместимый OMP Gateway (`/v1/chat/completions`) с поддержкой API ключей и мягких повторов (retry выполняется строго до первого байта, предотвращая дублирование).
-   * **Резервный:** Бесшовный fallback на локальный движок Antigravity Language Server, если внешний Gateway временно недоступен.
-
+2. **⚡ Прямой OMP SSE транспорт генерации:**
+   * **Прямое подключение:** Высокоскоростной Server-Sent Events (SSE) стриминг токенов напрямую в Telegram через OpenAI-совместимый OMP Gateway (`/v1/chat/completions`).
+   * **Reasoning Resilience:** Гарантированная передача уровня `reasoning_effort` (`medium`/`low`/`high`) для Gemini 3.7 Flash и Claude (исключает ошибки `400 Thinking level MINIMAL is not supported` и `502 thought-only`).
+   * **Умный Retry:** Bounded exponential backoff для 429 (RPS rate limit) и 5xx, выполняемый строго до первого байта вывода.
 3. **🗄️ Изолированный стейт в SQLite WAL (`data/state.db`):**
    * Полная изоляция истории диалогов, персональных настроек моделей, уровня reasoning и RAG-памяти по Telegram User ID.
    * Атомарная запись состояний и профилей.

@@ -1,7 +1,7 @@
 # Environment & Secrets
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -12,7 +12,6 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-downloads/
 eggs/
 .eggs/
 lib/
@@ -28,19 +27,32 @@ wheels/
 env/
 venv/
 ENV/
+.pytest_cache/
 
 # Logs & Runtime
 *.log
 bot.log
 
 # User Runtime Data & Sessions
-data/sessions.json
-data/emotional_state.json
-data/adaptive_profiles.json
-data/custom_emojis.json
-data/user_assets.json
-data/state.db*
+data/
+memories/
 downloads/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.session
+*.session-journal
+*.session:Zone.Identifier
+
+# Node.js / Open-Antigravity
+node_modules/
+tools/open-antigravity/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # IDE & OS
 .idea/

@@ -1,17 +1,13 @@
-"""OpenAI-compatible OMP transport with bounded retry semantics and local Antigravity Language Server fallback."""
+"""Direct OpenAI-compatible OMP transport with bounded retry semantics and SSE streaming."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import os
 import random
-import re
-import subprocess
-import time
 from collections.abc import AsyncGenerator
-from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -24,11 +20,13 @@ logger = logging.getLogger(__name__)
 
 AVAILABLE_MODELS = [
     "google-antigravity/gemini-3.7-flash",
-    "google-antigravity/gemini-3.6-flash",
-    "google-antigravity/claude-sonnet-4-5",
-    "google-antigravity/claude-opus-4-6",
 ]
 REASONING_LEVELS = {"low", "medium", "high"}
+
+# Reasoning effort defaults per SKILL.md:
+# gemini-3.7-flash and google-antigravity models throw 400 "Thinking level MINIMAL is not supported"
+# if reasoning_effort is absent or minimal. Level 'high' may cause 502 thought-only responses.
+DEFAULT_REASONING_EFFORT = "medium"
 
 
 class GatewayError(RuntimeError):
@@ -40,6 +38,8 @@ class GatewayUnavailable(GatewayError):
 
 
 class AntigravityClient:
+    """Direct OMP Gateway Client communicating via OpenAI-compatible SSE streaming."""
+
     def __init__(
         self,
         base_url: str | None = None,
@@ -49,19 +49,12 @@ class AntigravityClient:
         contexts: ContextManager = context_manager,
         memories: RAGMemoryEngine = rag_engine,
         http_client: httpx.AsyncClient | None = None,
-        ls_bin: Path | None = None,
-        brain_dir: Path | None = None,
     ) -> None:
         self.base_url = (base_url or config.settings.omp_base_url).rstrip("/")
         self.store = store
         self.contexts = contexts
         self.memories = memories
         self._owns_client = http_client is None
-        self.ls_bin = ls_bin or (config.LINUX_LS_BIN if config.LINUX_LS_BIN.exists() else config.WIN_LS_BIN)
-        self.brain_dir = brain_dir or (config.LINUX_BRAIN_DIR if config.LINUX_BRAIN_DIR.exists() else config.WIN_BRAIN_DIR)
-        self._cached_env: dict[str, str] | None = None
-        self._cached_port: str | None = None
-        self._cached_csrf: str | None = None
 
         headers = {}
         key = config.settings.omp_api_key if api_key is None else api_key
@@ -71,7 +64,7 @@ class AntigravityClient:
             headers=headers,
             timeout=httpx.Timeout(config.settings.request_timeout_seconds, connect=5.0),
         )
-        logger.info("OMP client initialized for %s", self.base_url)
+        logger.info("Direct OMP client initialized for %s", self.base_url)
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -81,36 +74,56 @@ class AntigravityClient:
         return self.store.get_preferences(user_id)["model"] or config.settings.default_model
 
     def set_user_model(self, user_id: int, model_name: str) -> None:
-        if model_name not in AVAILABLE_MODELS:
-            raise ValueError("Unsupported model")
-        self.store.set_preference(user_id, "model", model_name)
+        normalized = config.normalize_model_name(model_name)
+        if normalized not in AVAILABLE_MODELS and not normalized.startswith("google-antigravity/"):
+            raise ValueError(f"Unsupported model: {model_name}")
+        self.store.set_preference(user_id, "model", normalized)
 
     def get_user_reasoning(self, user_id: int) -> str:
-        return self.store.get_preferences(user_id)["reasoning"] or config.settings.reasoning_effort
+        return (
+            self.store.get_preferences(user_id)["reasoning"]
+            or config.settings.reasoning_effort
+            or DEFAULT_REASONING_EFFORT
+        )
 
     def set_user_reasoning(self, user_id: int, effort: str) -> None:
-        if effort not in REASONING_LEVELS:
-            raise ValueError("Unsupported reasoning effort")
-        self.store.set_preference(user_id, "reasoning", effort)
+        normalized = effort.strip().lower()
+        if normalized not in REASONING_LEVELS:
+            raise ValueError(f"Unsupported reasoning effort: {effort}. Must be one of {REASONING_LEVELS}")
+        self.store.set_preference(user_id, "reasoning", normalized)
 
     def clear_history(self, user_id: int) -> None:
         self.contexts.clear_user_context(user_id)
         self.store.clear_preferences(user_id)
+        self.store.set_conversation_id(user_id, None)
+
+    def _get_endpoint(self, path: str) -> str:
+        """Helper to construct correct path whether base_url has /v1 or not."""
+        clean_path = path.lstrip("/")
+        if self.base_url.endswith("/v1"):
+            return f"{self.base_url}/{clean_path}"
+        return f"{self.base_url}/v1/{clean_path}"
 
     async def check_omp_health(self) -> bool:
-        try:
-            response = await self._client.get(f"{self.base_url}/models", timeout=2.0)
-            return response.status_code == 200
-        except (httpx.HTTPError, OSError):
-            return False
+        """Health-check against OMP /models or /health."""
+        for url in (self._get_endpoint("models"), f"{self.base_url}/health"):
+            try:
+                response = await self._client.get(url, timeout=2.0)
+                if response.status_code == 200:
+                    return True
+            except (httpx.HTTPError, OSError):
+                continue
+        return False
 
     async def list_omp_models(self) -> list[str]:
+        """Fetch available models from OMP."""
         try:
-            response = await self._client.get(f"{self.base_url}/models", timeout=5.0)
+            response = await self._client.get(self._get_endpoint("models"), timeout=5.0)
             response.raise_for_status()
+            data = response.json().get("data", [])
             models = [
                 item["id"]
-                for item in response.json().get("data", [])
+                for item in data
                 if isinstance(item, dict) and isinstance(item.get("id"), str)
             ]
             return models or AVAILABLE_MODELS
@@ -121,21 +134,41 @@ class AntigravityClient:
         delay = min(2**attempt, 16) + random.uniform(0, 0.25)
         await asyncio.sleep(delay)
 
-    async def _iter_sse_content(self, response: httpx.Response) -> AsyncGenerator[str, None]:
+    def _ensure_reasoning_effort(self, model: str, effort: str) -> str:
+        if (
+            "3.7" in model
+            or "claude" in model.lower()
+            or "google-antigravity/" in model
+        ) and effort not in REASONING_LEVELS:
+            effort = DEFAULT_REASONING_EFFORT
+        return effort
+
+    async def _iter_sse_content(self, response: httpx.Response) -> AsyncGenerator[tuple[str, str | None], None]:
+        """Parses standard SSE stream lines into (token, conversation_id) tuples."""
         async for line in response.aiter_lines():
-            if not line.startswith("data:"):
+            line = line.strip()
+            if not line or not line.startswith("data:"):
                 continue
             raw = line[5:].strip()
             if raw == "[DONE]":
                 return
             try:
                 data = json.loads(raw)
-                token = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                convo_id = data.get("_conversation_id")
+                choices = data.get("choices", [])
+                if not choices:
+                    if convo_id:
+                        yield ("", convo_id)
+                    continue
+                delta = choices[0].get("delta", {})
+                token = delta.get("content", "")
             except (json.JSONDecodeError, AttributeError, IndexError, TypeError):
-                logger.debug("Ignored malformed OMP SSE event")
+                logger.debug("Ignored malformed OMP SSE event: %s", raw[:100])
                 continue
             if isinstance(token, str) and token:
-                yield token
+                yield (token, convo_id)
+            elif convo_id:
+                yield ("", convo_id)
 
     async def stream_omp_chat(
         self,
@@ -146,7 +179,24 @@ class AntigravityClient:
         adaptive_context: str = "",
         user_emojis_context: str = "",
     ) -> AsyncGenerator[str, None]:
+        """Direct SSE chat completion stream from OMP Gateway with auto-retry and reasoning handling."""
         model = self.get_user_model(user_id)
+        reasoning_effort = self._ensure_reasoning_effort(model, self.get_user_reasoning(user_id))
+        convo_id = self.store.get_conversation_id(user_id)
+
+        reasoning_desc = (
+            "минимальные краткие рассуждения (Low / Minimal Thinking)"
+            if reasoning_effort == "low"
+            else "умеренный баланс размышлений (Medium Thinking)"
+            if reasoning_effort == "medium"
+            else "максимально глубокий анализ (High Thinking)"
+        )
+        runtime_context = (
+            f"[ТЕКУЩЕЕ СОСТОЯНИЕ РЕЖИМА РАССУЖДЕНИЙ / REASONING EFFORT]:\n"
+            f"• Модель: Gemini 3.7 Flash\n"
+            f"• Активный уровень Reasoning Effort: {reasoning_effort.upper()} ({reasoning_desc})."
+        )
+
         messages = self.contexts.build_payload_messages(
             user_id=user_id,
             current_prompt=prompt,
@@ -155,33 +205,71 @@ class AntigravityClient:
             memory_context=self.memories.format_memory_context(user_id),
             adaptive_context=adaptive_context,
             user_emojis_context=user_emojis_context,
+            runtime_context=runtime_context,
         )
-        payload: dict[str, object] = {
+
+        payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "max_tokens": config.settings.max_output_tokens,
-            "reasoning_effort": self.get_user_reasoning(user_id),
+            "reasoning_effort": reasoning_effort,
             "stream": True,
         }
-        url = f"{self.base_url}/chat/completions"
-        reply: list[str] = []
+        if convo_id:
+            payload["conversation_id"] = convo_id
 
-        for attempt in range(config.settings.api_max_retries + 1):
+        req_headers: dict[str, str] = {}
+        if convo_id:
+            req_headers["x-conversation-id"] = convo_id
+
+        url = self._get_endpoint("chat/completions")
+        reply: list[str] = []
+        max_retries = max(config.settings.api_max_retries, 1)
+
+        for attempt in range(max_retries + 1):
             emitted = False
-            retryable_status = False
+            retryable = False
             try:
-                async with self._client.stream("POST", url, json=payload) as response:
+                async with self._client.stream("POST", url, json=payload, headers=req_headers) as response:
                     if response.status_code != 200:
-                        body = (await response.aread()).decode("utf-8", errors="replace")[:500]
-                        logger.warning("OMP HTTP %s: %s", response.status_code, body)
-                        retryable_status = response.status_code == 429 or response.status_code >= 500
-                        if not retryable_status:
-                            raise GatewayError(f"OMP отклонил запрос (HTTP {response.status_code}).")
+                        body_bytes = await response.aread()
+                        body_text = body_bytes.decode("utf-8", errors="replace")[:1000]
+                        logger.warning("OMP HTTP %s: %s", response.status_code, body_text)
+
+                        # Check for 429 RPS rate limit (Resource exhausted / check quota) per SKILL.md
+                        is_rate_limit = (
+                            response.status_code == 429
+                            or "resource has been exhausted" in body_text.lower()
+                            or "check quota" in body_text.lower()
+                        )
+                        # Check for 502 thought-only response
+                        is_thought_only = (
+                            response.status_code == 502
+                            and "thought-only response" in body_text.lower()
+                        )
+                        if is_thought_only:
+                            logger.warning(
+                                "OMP returned thought-only 502 for model %s. Reasoning effort %s may be too high or max_tokens too low.",
+                                model,
+                                reasoning_effort,
+                            )
+
+                        if is_rate_limit or response.status_code >= 500:
+                            retryable = True
+                        else:
+                            raise GatewayError(
+                                f"OMP отклонил запрос (HTTP {response.status_code}): {body_text[:200]}"
+                            )
                     else:
-                        async for token in self._iter_sse_content(response):
-                            emitted = True
-                            reply.append(token)
-                            yield token
+                        async for token, new_convo_id in self._iter_sse_content(response):
+                            if new_convo_id and new_convo_id != convo_id:
+                                self.store.set_conversation_id(user_id, new_convo_id)
+                                convo_id = new_convo_id
+                            if token:
+                                emitted = True
+                                reply.append(token)
+                                yield token
+
                         full_reply = "".join(reply).strip()
                         if full_reply:
                             self.contexts.add_exchange(user_id, prompt, full_reply)
@@ -191,205 +279,21 @@ class AntigravityClient:
             except httpx.HTTPError as exc:
                 if emitted:
                     raise GatewayUnavailable("OMP оборвал поток после начала ответа.") from exc
-                logger.warning("OMP transport attempt %s failed: %s", attempt + 1, type(exc).__name__)
+                logger.warning(
+                    "OMP transport attempt %d/%d failed: %s (%s)",
+                    attempt + 1,
+                    max_retries + 1,
+                    type(exc).__name__,
+                    exc,
+                )
+                retryable = True
 
-            if attempt >= config.settings.api_max_retries:
+            if attempt >= max_retries:
                 break
-            if retryable_status or not emitted:
+            if retryable and not emitted:
                 await self._backoff(attempt + 1)
 
-        raise GatewayUnavailable("OMP Gateway недоступен. Проверьте его запуск и OMP_BASE_URL.")
-
-    # --- Local Antigravity Language Server Fallback Engine ---
-
-    def get_latest_conversation_id(self) -> str | None:
-        """Dynamically finds the most recent active conversation in the brain directory."""
-        if not self.brain_dir.exists():
-            return None
-        try:
-            valid: list[tuple[str, float]] = []
-            for d in self.brain_dir.iterdir():
-                if d.is_dir():
-                    log = d / ".system_generated" / "logs" / "transcript.jsonl"
-                    if log.exists():
-                        valid.append((d.name, log.stat().st_mtime))
-            if not valid:
-                return None
-            valid.sort(key=lambda x: x[1], reverse=True)
-            return valid[0][0]
-        except Exception as e:
-            logger.warning("Failed to scan brain dir: %s", e)
-            return None
-
-    def discover_language_server(self, force_refresh: bool = False) -> dict[str, str] | None:
-        """Dynamically finds the running language_server process, port and CSRF token."""
-        if self._cached_env and not force_refresh:
-            return self._cached_env
-
-        port = None
-        csrf_token = None
-        target_pid = None
-
-        proc_path = Path("/proc")
-        if proc_path.exists():
-            try:
-                for pid_dir in proc_path.iterdir():
-                    if pid_dir.is_dir() and pid_dir.name.isdigit():
-                        cmd_file = pid_dir / "cmdline"
-                        if cmd_file.exists():
-                            try:
-                                with open(cmd_file, "rb") as f:
-                                    cmdline = f.read().decode("utf-8", errors="ignore").replace("\x00", " ")
-                                if "language_server" in cmdline and "--csrf_token" in cmdline:
-                                    m = re.search(r"--csrf_token\s+([a-f0-9\-]+)", cmdline)
-                                    if m:
-                                        csrf_token = m.group(1)
-                                        target_pid = pid_dir.name
-                                        break
-                            except Exception:
-                                pass
-
-                if target_pid and csrf_token:
-                    candidate_ports = []
-                    try:
-                        ss_res = subprocess.run(["ss", "-tlpn", "-p"], capture_output=True, text=True, timeout=2)
-                        for line in ss_res.stdout.splitlines():
-                            if f"pid={target_pid}," in line or f"pid={target_pid})" in line:
-                                m = re.search(r":(\d+)\s+", line)
-                                if m:
-                                    candidate_ports.append(m.group(1))
-                    except Exception:
-                        pass
-
-                    sample_convo = self.get_latest_conversation_id() or "5038b367-f7c3-4502-918b-fa8d0a949f77"
-                    for cp in candidate_ports:
-                        test_env = os.environ.copy()
-                        test_env["ANTIGRAVITY_LS_ADDRESS"] = f"http://127.0.0.1:{cp}"
-                        test_env["ANTIGRAVITY_CSRF_TOKEN"] = csrf_token
-                        try:
-                            probe = subprocess.run(
-                                [str(self.ls_bin), "agentapi", "get-conversation-metadata", sample_convo],
-                                capture_output=True,
-                                text=True,
-                                env=test_env,
-                                timeout=2,
-                            )
-                            if probe.returncode == 0 and ("conversationMetadata" in probe.stdout or "response" in probe.stdout):
-                                port = cp
-                                break
-                        except Exception:
-                            continue
-            except Exception as e:
-                logger.debug("Linux language_server discovery error: %s", e)
-
-        if port and csrf_token:
-            env = os.environ.copy()
-            env["ANTIGRAVITY_LS_ADDRESS"] = f"http://127.0.0.1:{port}"
-            env["ANTIGRAVITY_CSRF_TOKEN"] = csrf_token
-            self._cached_env = env
-            self._cached_port = port
-            self._cached_csrf = csrf_token
-            return env
-
-        return None
-
-    def run_agentapi(self, args: list[str]) -> dict | None:
-        env = self.discover_language_server()
-        if not env or not self.ls_bin.exists():
-            env = self.discover_language_server(force_refresh=True)
-            if not env:
-                return None
-
-        cmd = [str(self.ls_bin), "agentapi"] + args
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=15)
-            raw = res.stdout.strip()
-            if raw:
-                try:
-                    return json.loads(raw)
-                except Exception:
-                    return {"raw": raw}
-            return None
-        except Exception as e:
-            logger.error("Error running agentapi: %s", e)
-            self._cached_env = None
-            return None
-
-    def send_local_message(self, conversation_id: str, text: str) -> bool:
-        res = self.run_agentapi(["send-message", conversation_id, text])
-        return bool(res and not res.get("error"))
-
-    def get_transcript_path(self, conversation_id: str) -> Path:
-        return (
-            self.brain_dir
-            / conversation_id
-            / ".system_generated"
-            / "logs"
-            / "transcript.jsonl"
-        )
-
-    def get_file_size(self, conversation_id: str) -> int:
-        path = self.get_transcript_path(conversation_id)
-        if not path.exists():
-            return 0
-        try:
-            return path.stat().st_size
-        except Exception:
-            return 0
-
-    async def stream_local_brain(
-        self,
-        user_id: int,
-        prompt: str,
-        conversation_id: str | None = None,
-        timeout: int = 180,
-    ) -> AsyncGenerator[str, None]:
-        """Fallback stream tailing from local Antigravity brain transcript.jsonl."""
-        convo_id = conversation_id or self.get_latest_conversation_id()
-        if not convo_id:
-            yield "❌ Локальный движок Antigravity не найден. Запустите Antigravity IDE или OMP Gateway."
-            return
-
-        initial_offset = self.get_file_size(convo_id)
-        await asyncio.to_thread(self.send_local_message, convo_id, prompt)
-
-        path = self.get_transcript_path(convo_id)
-        start_time = time.time()
-        current_offset = max(0, initial_offset)
-
-        while time.time() - start_time < timeout:
-            if path.exists():
-                try:
-                    file_size = path.stat().st_size
-                    if file_size > current_offset:
-                        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                            f.seek(current_offset)
-                            new_data = f.read()
-                            current_offset = f.tell()
-
-                        lines = [line.strip() for line in new_data.splitlines() if line.strip()]
-                        for line in reversed(lines):
-                            try:
-                                step = json.loads(line)
-                                if (
-                                    step.get("source") == "MODEL"
-                                    and step.get("type") == "PLANNER_RESPONSE"
-                                    and step.get("status") == "DONE"
-                                    and step.get("content")
-                                    and not step.get("tool_calls")
-                                ):
-                                    full_reply = step.get("content").strip()
-                                    self.contexts.add_exchange(user_id, prompt, full_reply)
-                                    yield full_reply
-                                    return
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-            await asyncio.sleep(0.1)
-
-        yield "⚠️ Локальный агент долго отвечает. Попробуйте повторить."
+        raise GatewayUnavailable("OMP Gateway недоступен. Проверьте запуск OMP и OMP_BASE_URL.")
 
     async def generate_stream(
         self,
@@ -400,28 +304,17 @@ class AntigravityClient:
         user_emojis_context: str = "",
         conversation_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Unified Generator: Prioritizes OMP Gateway SSE, falls back seamlessly to Local Brain."""
-        # If custom base_url was given (e.g. in tests) or OMP is alive, use OMP stream
-        is_custom_or_test = not self._owns_client or self.base_url != config.settings.omp_base_url
-        is_omp_alive = is_custom_or_test or await self.check_omp_health()
-
-        if is_omp_alive:
-            try:
-                async for token in self.stream_omp_chat(
-                    user_id,
-                    prompt,
-                    emotional_context=emotional_context,
-                    adaptive_context=adaptive_context,
-                    user_emojis_context=user_emojis_context,
-                ):
-                    yield token
-                return
-            except GatewayUnavailable as exc:
-                if "после начала ответа" in str(exc) or is_custom_or_test:
-                    raise
-                logger.info("OMP Gateway unavailable, falling back to Local Antigravity Engine: %s", exc)
-
-        # Fallback to local Language Server
-        full_prompt = f"{emotional_context}\n{adaptive_context}\n{user_emojis_context}\n{prompt}".strip()
-        async for token in self.stream_local_brain(user_id, full_prompt, conversation_id=conversation_id):
+        """Primary stream generator: delegates directly to OMP SSE chat."""
+        del conversation_id  # Unused legacy argument preserved for signature compatibility
+        async for token in self.stream_omp_chat(
+            user_id=user_id,
+            prompt=prompt,
+            emotional_context=emotional_context,
+            adaptive_context=adaptive_context,
+            user_emojis_context=user_emojis_context,
+        ):
             yield token
+
+
+# Backward compatibility aliases
+OMPClient = AntigravityClient

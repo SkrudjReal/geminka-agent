@@ -1,4 +1,4 @@
-"""Main entry point for Geminka Telegram Bot application."""
+"""Main entry point for Geminka Telegram Bot application (Antigravity Connect/SSE)."""
 
 import asyncio
 import logging
@@ -25,8 +25,8 @@ async def main() -> None:
     config.settings.validate_startup()
     config.ensure_runtime_dirs()
 
-    # 2. Auto-start built-in Antigravity OMP SSE Gateway if not running
-    omp_server = None
+    # 2. Auto-start built-in Antigravity Connect/SSE Gateway if not running
+    omp_manager = None
     omp_task = None
     antigravity_client = AntigravityClient()
 
@@ -34,12 +34,14 @@ async def main() -> None:
         parsed = urlparse(config.settings.omp_base_url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 4000
-        logger.info("Local OMP Gateway is offline. Auto-launching built-in Antigravity OMP SSE Gateway on %s:%d...", host, port)
+        logger.info("Antigravity Connect/SSE Gateway is offline. Auto-launching on %s:%d...", host, port)
         try:
-            omp_server, omp_task = await start_omp_gateway_task(host=host, port=port)
-            logger.info("Built-in Antigravity OMP SSE Gateway is ONLINE on %s", config.settings.omp_base_url)
+            omp_manager, omp_task = await start_omp_gateway_task(host=host, port=port)
+            logger.info("Antigravity Connect/SSE Gateway is ONLINE on %s", config.settings.omp_base_url)
         except Exception as e:
-            logger.warning("Could not auto-start OMP Gateway: %s", e)
+            logger.warning("Could not auto-start Antigravity Gateway: %s", e)
+    else:
+        logger.info("Antigravity Connect/SSE Gateway is ONLINE on %s", config.settings.omp_base_url)
 
     bot = Bot(token=config.settings.bot_token)
     dp = Dispatcher(antigravity_client=antigravity_client)
@@ -53,7 +55,7 @@ async def main() -> None:
     # 4. Include handler routes
     dp.include_router(router)
 
-    logger.info("Starting Geminka Telegram Bot (OMP Gateway + Streaming + Clean Architecture)...")
+    logger.info("Starting Geminka Telegram Bot (Antigravity Connect/SSE + Clean Architecture)...")
     await bot.delete_webhook(drop_pending_updates=False)
 
     # 5. Safe startup notification via dedicated broadcaster service
@@ -78,8 +80,8 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        if omp_server:
-            omp_server.should_exit = True
+        if omp_manager:
+            await omp_manager.aclose()
         if omp_task:
             omp_task.cancel()
         await antigravity_client.aclose()

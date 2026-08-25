@@ -8,7 +8,7 @@ Inspired by Hermes Agent formatting & streaming architecture:
 - Conditional Context-Aware Quote Replies (<tg-reply />)
 - Dual Photo delivery with spoiler reply (<tg-send-photos />)
 - Progressive message edits with adaptive debounce (0.8s)
-- Animated streaming cursor (▉) during generation
+- Animated streaming cursor (▉) during generation это пиздёж
 - Dynamic think-tag (<think>...</think>) suppression
 - Flood control handling & 'message not modified' suppression
 """
@@ -661,6 +661,8 @@ class TelegramStreamConsumer:
                     sticker_file_id,
                     reply_parameters=sticker_reply_params,
                 )
+                if self.user_id:
+                    asset_harvester.record_sent_sticker(self.user_id, sticker_file_id)
             except Exception as e:
                 logger.warning(f"Failed to send sticker {sticker_file_id}: {e}")
 

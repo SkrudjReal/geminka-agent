@@ -101,6 +101,12 @@ class EmotionalEngine:
             self.save()
         return self.states[uid_str]
 
+    def reset_state(self, user_id: int) -> EmotionalState:
+        uid_str = str(user_id)
+        self.states[uid_str] = EmotionalState(user_id=user_id)
+        self.save()
+        return self.states[uid_str]
+
     def update_from_input(self, user_id: int, user_text: str) -> EmotionalState:
         state = self.get_state(user_id)
         now = time.time()

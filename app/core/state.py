@@ -36,6 +36,7 @@ class StateStore:
                     user_id INTEGER PRIMARY KEY,
                     model TEXT,
                     reasoning TEXT,
+                    conversation_id TEXT,
                     updated_at REAL NOT NULL
                 );
 
@@ -66,19 +67,51 @@ class StateStore:
 
     def get_preferences(self, user_id: int) -> dict[str, str | None]:
         with self._lock, self._connect() as connection:
+            # Ensure column exists for existing DBs
+            try:
+                connection.execute("ALTER TABLE user_preferences ADD COLUMN conversation_id TEXT")
+            except sqlite3.OperationalError:
+                pass
             row = connection.execute(
-                "SELECT model, reasoning FROM user_preferences WHERE user_id = ?",
+                "SELECT model, reasoning, conversation_id FROM user_preferences WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
         if row is None:
-            return {"model": None, "reasoning": None}
-        return {"model": row["model"], "reasoning": row["reasoning"]}
+            return {"model": None, "reasoning": None, "conversation_id": None}
+        return {
+            "model": row["model"],
+            "reasoning": row["reasoning"],
+            "conversation_id": row["conversation_id"] if "conversation_id" in row.keys() else None,
+        }
+
+    def get_conversation_id(self, user_id: int) -> str | None:
+        prefs = self.get_preferences(user_id)
+        return prefs.get("conversation_id")
+
+    def set_conversation_id(self, user_id: int, conversation_id: str | None) -> None:
+        with self._lock, self._connect() as connection:
+            try:
+                connection.execute("ALTER TABLE user_preferences ADD COLUMN conversation_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+            connection.execute(
+                "INSERT INTO user_preferences(user_id, updated_at) VALUES(?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET updated_at = excluded.updated_at",
+                (user_id, time.time()),
+            )
+            connection.execute(
+                "UPDATE user_preferences SET conversation_id = ?, updated_at = ? WHERE user_id = ?",
+                (conversation_id, time.time(), user_id),
+            )
 
     def set_preference(self, user_id: int, field: str, value: str) -> None:
         statements = {
             "model": "UPDATE user_preferences SET model = ?, updated_at = ? WHERE user_id = ?",
             "reasoning": (
                 "UPDATE user_preferences SET reasoning = ?, updated_at = ? WHERE user_id = ?"
+            ),
+            "conversation_id": (
+                "UPDATE user_preferences SET conversation_id = ?, updated_at = ? WHERE user_id = ?"
             ),
         }
         if field not in statements:

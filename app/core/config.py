@@ -15,9 +15,11 @@ load_dotenv(BASE_DIR / ".env")
 
 MODEL_ALIASES = {
     "flash": "google-antigravity/gemini-3.7-flash",
+    "flash-3.7": "google-antigravity/gemini-3.7-flash",
+    "gemini-3.7-flash": "google-antigravity/gemini-3.7-flash",
+    "gemini-3.7": "google-antigravity/gemini-3.7-flash",
     "gemini": "google-antigravity/gemini-3.7-flash",
-    "sonnet": "google-antigravity/claude-sonnet-4-5",
-    "opus": "google-antigravity/claude-opus-4-6",
+    "3.7": "google-antigravity/gemini-3.7-flash",
 }
 
 
@@ -130,7 +132,7 @@ class Settings:
                 maximum=65536,
             ),
             api_max_retries=_parse_int(
-                source.get("API_MAX_RETRIES", "3"),
+                source.get("API_MAX_RETRIES", "5"),
                 name="API_MAX_RETRIES",
                 minimum=0,
                 maximum=10,
@@ -180,6 +182,8 @@ settings = Settings.from_env()
 DATA_DIR = BASE_DIR / "data"
 MEMORIES_DIR = BASE_DIR / "memories"
 DOWNLOADS_DIR = BASE_DIR / "downloads"
+STICKERS_CACHE_DIR = DATA_DIR / "stickers_cache"
+PHOTOS_CACHE_DIR = DATA_DIR / "photos_cache"
 STATE_DB_FILE = DATA_DIR / "state.db"
 STICKERS_FILE = DATA_DIR / "bot_stickers.json"
 USER_ASSETS_FILE = DATA_DIR / "user_assets.json"
@@ -187,15 +191,6 @@ CUSTOM_EMOJIS_FILE = DATA_DIR / "custom_emojis.json"
 EMOTIONAL_STATE_FILE = DATA_DIR / "emotional_state.json"
 ADAPTIVE_STATE_FILE = DATA_DIR / "adaptive_profiles.json"
 PROMPT_FILE = BASE_DIR / "system_prompt.txt"
-
-LINUX_LS_BIN = Path(
-    "/home/velunae/.antigravity-ide-server/bin/2.5.5-ecfbad74d93962fc8ca485d93ab9b4f3d4cb6cf8/extensions/antigravity/bin/language_server_linux_x64"
-)
-WIN_LS_BIN = Path(
-    r"C:\Users\velun\AppData\Local\Programs\antigravity\resources\app\extensions\antigravity\bin\language_server_windows_x64.exe"
-)
-LINUX_BRAIN_DIR = Path("/home/velunae/.gemini/antigravity-ide/brain")
-WIN_BRAIN_DIR = Path(r"C:\Users\velun\.gemini\antigravity-ide\brain")
 
 SYSTEM_PROMPT_DEFAULT = (
     "Ты — Geminka (Columbina), живая, умная, эмоциональная девушка-ассистент."
@@ -213,7 +208,7 @@ API_MAX_RETRIES = settings.api_max_retries
 
 
 def ensure_runtime_dirs() -> None:
-    for directory in (DATA_DIR, MEMORIES_DIR, DOWNLOADS_DIR):
+    for directory in (DATA_DIR, MEMORIES_DIR, DOWNLOADS_DIR, STICKERS_CACHE_DIR, PHOTOS_CACHE_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 

@@ -6,7 +6,7 @@ import random
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -235,10 +235,20 @@ async def process_set_reasoning(callback: types.CallbackQuery, antigravity_clien
         pass
 
 
-@router.message(Command("mood", "emotions", "relationship"))
-async def cmd_mood(message: types.Message):
+@router.message(Command("mood", "emotions", "relationship", "reset_mood", "mood_reset"))
+async def cmd_mood(message: types.Message, command: CommandObject | None = None):
     if not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
+        return
+
+    cmd_name = (command.command if command else "").lower()
+    args = (command.args or "").strip().lower() if command else ""
+    if cmd_name in ["reset_mood", "mood_reset"] or args in ["reset", "clear", "сброс", "дефолт", "default"]:
+        emotion_engine.reset_state(message.from_user.id)
+        await send_response(
+            message,
+            '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Эмоциональное состояние и шкала отношений сброшены к начальным значениям!**'
+        )
         return
 
     state = emotion_engine.get_state(message.from_user.id)

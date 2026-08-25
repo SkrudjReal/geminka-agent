@@ -8,6 +8,7 @@ Allows Columbina to dynamically mirror and use the user's own custom emojis and 
 """
 
 import logging
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,7 @@ class AssetHarvester:
             "stickers": {},        # file_id -> {file_id, emoji, set_name, count, last_used, tags: [], users: []}
             "sticker_packs": {},  # set_name -> {set_name, sample_file_id, sticker_count, last_used}
             "user_preferences": {},  # user_id -> {favorite_emojis: [], favorite_packs: []}
+            "recent_sent_stickers": {},  # user_id -> [file_ids of last 20 sent stickers]
         }
         self.load()
 
@@ -215,6 +217,79 @@ class AssetHarvester:
 
         return "\n\n".join(blocks)
 
+    def record_sent_sticker(self, user_id: int, file_id: str) -> None:
+        """Records a sticker sent by the bot for recency and frequency penalty tracking."""
+        uid_str = str(user_id)
+        recent = self.data.setdefault("recent_sent_stickers", {}).setdefault(uid_str, [])
+        recent.append(file_id)
+        if len(recent) > 20:
+            self.data["recent_sent_stickers"][uid_str] = recent[-20:]
+        self.save()
+
+    def get_recent_sent_stickers(self, user_id: int, limit: int = 20) -> List[str]:
+        """Returns the list of recently sent sticker file_ids for the user."""
+        uid_str = str(user_id)
+        recent = self.data.get("recent_sent_stickers", {}).get(uid_str, [])
+        return recent[-limit:]
+
+    async def ingest_full_sticker_pack(
+        self,
+        bot: Any,
+        user_id: int,
+        set_name: str,
+    ) -> None:
+        """Fetches all stickers in the pack via Telegram Bot API get_sticker_set and saves them to JSON."""
+        if not set_name or set_name == "unknown":
+            return
+
+        p_info = self.data.get("sticker_packs", {}).get(set_name, {})
+        if p_info.get("fully_synced") and (time.time() - p_info.get("last_sync", 0) < 86400):
+            return
+
+        try:
+            sticker_set = await bot.get_sticker_set(set_name)
+            uid_str = str(user_id)
+            now = time.time()
+            for s in sticker_set.stickers:
+                fid = s.file_id
+                emoji_val = s.emoji or "✨"
+                if fid not in self.data["stickers"]:
+                    self.data["stickers"][fid] = {
+                        "file_id": fid,
+                        "emoji": emoji_val,
+                        "set_name": set_name,
+                        "is_animated": s.is_animated,
+                        "is_video": s.is_video,
+                        "count": 0,
+                        "first_seen": now,
+                        "last_used": now,
+                        "users": [uid_str],
+                        "tags": [emoji_val] if emoji_val else [],
+                    }
+                else:
+                    item = self.data["stickers"][fid]
+                    if uid_str not in item.get("users", []):
+                        item.setdefault("users", []).append(uid_str)
+                    if emoji_val and emoji_val not in item.get("tags", []):
+                        item.setdefault("tags", []).append(emoji_val)
+
+            self.data["sticker_packs"][set_name] = {
+                "set_name": set_name,
+                "title": getattr(sticker_set, "title", set_name),
+                "sticker_count": len(sticker_set.stickers),
+                "fully_synced": True,
+                "last_sync": now,
+                "last_used": now,
+            }
+            u_pref = self.data["user_preferences"].setdefault(uid_str, {"favorite_emojis": [], "favorite_packs": []})
+            if set_name not in u_pref["favorite_packs"]:
+                u_pref["favorite_packs"].append(set_name)
+
+            self.save()
+            logger.info(f"Ingested full sticker pack '{set_name}' ({len(sticker_set.stickers)} stickers) for user {user_id}.")
+        except Exception as e:
+            logger.warning(f"Failed to ingest full sticker pack '{set_name}': {e}")
+
     def find_best_matching_sticker(
         self,
         user_id: int,
@@ -222,40 +297,51 @@ class AssetHarvester:
         emoji: Optional[str] = None,
         pack: Optional[str] = None,
     ) -> Optional[str]:
-        """Finds the best matching sticker file_id from the user's collected stickers."""
+        """Finds the best matching sticker file_id from the user's collected stickers with a 50% penalty per recent usage."""
         stickers = self.get_user_stickers(user_id)
         if not stickers:
             return None
 
-        # 1. Match by emoji + pack
+        candidates = []
+        # Priority 1: Match by emoji + pack
         if emoji and pack:
-            for s in stickers:
-                if s.get("emoji") == emoji and pack.lower() in s.get("set_name", "").lower():
-                    return s["file_id"]
+            candidates = [
+                s for s in stickers
+                if s.get("emoji") == emoji and pack.lower() in s.get("set_name", "").lower()
+            ]
 
-        # 2. Match by emoji
-        if emoji:
-            for s in stickers:
-                if s.get("emoji") == emoji:
-                    return s["file_id"]
+        # Priority 2: Match by emoji only
+        if not candidates and emoji:
+            candidates = [s for s in stickers if s.get("emoji") == emoji]
 
-        # 3. Match by pack
-        if pack:
-            for s in stickers:
-                if pack.lower() in s.get("set_name", "").lower():
-                    return s["file_id"]
+        # Priority 3: Match by pack only
+        if not candidates and pack:
+            candidates = [s for s in stickers if pack.lower() in s.get("set_name", "").lower()]
 
-        # 4. Match by tag in tags/set_name
-        if tag:
+        # Priority 4: Match by tag in tags / set_name
+        if not candidates and tag:
             t_low = tag.lower().strip()
-            for s in stickers:
-                if any(t_low in str(x).lower() for x in s.get("tags", [])):
-                    return s["file_id"]
-                if t_low in s.get("set_name", "").lower():
-                    return s["file_id"]
+            candidates = [
+                s for s in stickers
+                if any(t_low in str(x).lower() for x in s.get("tags", [])) or t_low in s.get("set_name", "").lower()
+            ]
 
-        # 5. Return the user's most frequently used sticker
-        return stickers[0]["file_id"]
+        # Priority 5: Fallback to all user stickers
+        if not candidates:
+            candidates = stickers
+
+        recent_history = self.get_recent_sent_stickers(user_id, limit=20)
+
+        # Calculate weights for each candidate: 50% penalty per usage in last 20 messages (w = 1.0 * (0.5 ** count))
+        weights = []
+        for s in candidates:
+            fid = s["file_id"]
+            recent_count = recent_history.count(fid)
+            w = 1.0 * (0.5 ** recent_count)
+            weights.append(w)
+
+        chosen = random.choices(candidates, weights=weights, k=1)[0]
+        return chosen["file_id"]
 
 
 asset_harvester = AssetHarvester()

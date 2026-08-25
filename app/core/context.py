@@ -51,6 +51,7 @@ class ContextManager:
         memory_context: str = "",
         adaptive_context: str = "",
         user_emojis_context: str = "",
+        runtime_context: str = "",
     ) -> list[dict[str, str]]:
         """Create an OpenAI-compatible payload with bounded user-controlled text."""
         system_parts = [system_prompt.strip()]
@@ -59,6 +60,7 @@ class ContextManager:
             adaptive_context,
             user_emojis_context,
             memory_context,
+            runtime_context,
         ):
             if block.strip():
                 system_parts.append(block.strip())

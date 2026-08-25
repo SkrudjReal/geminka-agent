@@ -25,5 +25,12 @@ def test_invalid_allowlist_is_rejected() -> None:
 
 
 def test_model_alias_is_normalized() -> None:
-    settings = Settings.from_env({"DEFAULT_MODEL": "opus"})
-    assert settings.default_model == "google-antigravity/claude-opus-4-6"
+    assert Settings.from_env({"DEFAULT_MODEL": "flash"}).default_model == "google-antigravity/gemini-3.7-flash"
+    assert Settings.from_env({"DEFAULT_MODEL": "flash-3.7"}).default_model == "google-antigravity/gemini-3.7-flash"
+    assert Settings.from_env({"DEFAULT_MODEL": "gemini"}).default_model == "google-antigravity/gemini-3.7-flash"
+    assert Settings.from_env({"DEFAULT_MODEL": "3.7"}).default_model == "google-antigravity/gemini-3.7-flash"
+
+
+def test_default_api_max_retries_is_five() -> None:
+    settings = Settings.from_env({})
+    assert settings.api_max_retries == 5
