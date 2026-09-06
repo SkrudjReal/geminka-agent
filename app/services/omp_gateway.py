@@ -15,8 +15,6 @@ from typing import Any
 
 import httpx
 
-from app.core import config
-
 logger = logging.getLogger("antigravity-connect-gateway")
 
 AVAILABLE_MODELS = [
@@ -52,10 +50,17 @@ class GatewayProcessManager:
 
 
 def _find_gateway_script() -> Path | None:
-    candidates = [
-        Path(__file__).resolve().parent.parent.parent / "tools" / "open-antigravity" / "dist" / "index.js",
-        Path("/home/velunae/tools/open-antigravity/dist/index.js"),
-    ]
+    configured_path = os.getenv("OPEN_ANTIGRAVITY_GATEWAY_SCRIPT")
+    candidates = []
+    if configured_path:
+        candidates.append(Path(configured_path).expanduser())
+    candidates.append(
+        Path(__file__).resolve().parent.parent.parent
+        / "tools"
+        / "open-antigravity"
+        / "dist"
+        / "index.js"
+    )
     for c in candidates:
         if c.exists():
             return c

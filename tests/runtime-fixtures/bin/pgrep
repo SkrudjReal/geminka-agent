@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+test -f "${GEMINKA_TEST_READY:?}"

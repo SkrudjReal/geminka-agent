@@ -1,23 +1,37 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/runtime/antigravity.sh
+source "$SCRIPT_DIR/scripts/runtime/antigravity.sh"
+# shellcheck source=scripts/runtime/gateway.sh
+source "$SCRIPT_DIR/scripts/runtime/gateway.sh"
 cd "$SCRIPT_DIR"
 
 echo "================================================================="
 echo "  🌸 Columbina (Geminka Agent) — All-in-One Automated Runner 🕊️ "
 echo "================================================================="
 
-# --- 1. Python Environment & UV Detection ---
+cleanup() {
+    echo ""
+    echo "🛑 Остановка Geminka..."
+    stop_omp_gateway
+    stop_antigravity_runtime
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# --- 1. Python environment ---
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "❌ Ошибка: Python 3 не найден в системе. Установите Python 3.10+."
+    echo "❌ Ошибка: Python 3 не найден в системе. Установи Python 3.10+."
     exit 1
 fi
 
 PY_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 echo "🔹 Python version: $PY_VERSION"
 
-# Ensure UV or Python virtual environment
 HAS_UV=false
 if command -v uv >/dev/null 2>&1; then
     HAS_UV=true
@@ -31,7 +45,7 @@ fi
 
 if [ "$HAS_UV" = true ]; then
     echo "🔹 Инициализация окружения через uv..."
-    uv sync --quiet || true
+    uv sync --quiet
 else
     echo "🔹 UV не обнаружен. Настройка стандартного Python venv..."
     if [ ! -d ".venv" ]; then
@@ -43,18 +57,12 @@ else
     pip install -q -e .
 fi
 
-# --- 2. Build Open-Antigravity Gateway if needed ---
+# --- 2. Gateway build ---
 GATEWAY_DIR="$SCRIPT_DIR/tools/open-antigravity"
 GATEWAY_DIST="$GATEWAY_DIR/dist/index.js"
+build_omp_gateway "$GATEWAY_DIR" "$GATEWAY_DIST"
 
-if [ ! -f "$GATEWAY_DIST" ] && [ -d "$GATEWAY_DIR" ]; then
-    if command -v npm >/dev/null 2>&1; then
-        echo "🔹 Компиляция TypeScript шлюза open-antigravity..."
-        (cd "$GATEWAY_DIR" && npm install --silent && npm run build --silent) || true
-    fi
-fi
-
-# --- 3. Interactive Authorization & Configuration Wizard ---
+# --- 3. Interactive configuration ---
 ENV_FILE="$SCRIPT_DIR/.env"
 ENV_EXAMPLE="$SCRIPT_DIR/.env.example"
 
@@ -67,13 +75,14 @@ if [ ! -f "$ENV_FILE" ]; then
     fi
 fi
 
-# Function to read value from .env
 get_env_val() {
     local key="$1"
-    grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d '=' -f2- | tr -d '\r"' || true
+    grep -E "^${key}=" "$ENV_FILE" 2>/dev/null \
+        | cut -d '=' -f2- \
+        | tr -d '\r"' \
+        || true
 }
 
-# Function to set/update value in .env
 set_env_val() {
     local key="$1"
     local val="$2"
@@ -87,13 +96,14 @@ set_env_val() {
 CURRENT_TOKEN=$(get_env_val "TELEGRAM_BOT_TOKEN")
 CURRENT_USERS=$(get_env_val "TELEGRAM_ALLOWED_USERS")
 
-# If token is default placeholder or empty, prompt interactively
-if [ -z "$CURRENT_TOKEN" ] || [ "$CURRENT_TOKEN" = "your_telegram_bot_token_here" ] || [ "$CURRENT_TOKEN" = "your_bot_token_here" ]; then
+if [ -z "$CURRENT_TOKEN" ] \
+    || [ "$CURRENT_TOKEN" = "your_telegram_bot_token_here" ] \
+    || [ "$CURRENT_TOKEN" = "your_bot_token_here" ]; then
     echo ""
     echo "🔑 --- Первоначальная настройка авторизации Telegram бота ---"
     read -r -p "👉 Введите Telegram Bot Token (получить в @BotFather): " INPUT_TOKEN
     INPUT_TOKEN=$(echo "$INPUT_TOKEN" | tr -d '[:space:]')
-    
+
     if [ -z "$INPUT_TOKEN" ]; then
         echo "❌ Ошибка: TELEGRAM_BOT_TOKEN не может быть пустым."
         exit 1
@@ -108,7 +118,7 @@ if [ -z "$CURRENT_USERS" ] || [ "$CURRENT_USERS" = "123456789" ]; then
     echo "💡 Свой ID можно узнать через бота @userinfobot в Telegram."
     read -r -p "👉 Введите ваш числовой Telegram ID: " INPUT_ID
     INPUT_ID=$(echo "$INPUT_ID" | tr -d '[:space:]')
-    
+
     if [ -n "$INPUT_ID" ]; then
         set_env_val "TELEGRAM_ALLOWED_USERS" "$INPUT_ID"
         set_env_val "TELEGRAM_OWNER_ID" "$INPUT_ID"
@@ -116,7 +126,6 @@ if [ -z "$CURRENT_USERS" ] || [ "$CURRENT_USERS" = "123456789" ]; then
     fi
 fi
 
-# Ensure OMP defaults in .env
 if [ -z "$(get_env_val "OMP_BASE_URL")" ]; then
     set_env_val "OMP_BASE_URL" "http://127.0.0.1:4000/v1"
 fi
@@ -130,66 +139,22 @@ if [ -z "$(get_env_val "MAX_OUTPUT_TOKENS")" ]; then
     set_env_val "MAX_OUTPUT_TOKENS" "8192"
 fi
 
-# --- 4. OMP Gateway Health Check & Auto-Launch ---
+# --- 4. Antigravity and OMP Gateway ---
 OMP_URL=$(get_env_val "OMP_BASE_URL")
 [ -z "$OMP_URL" ] && OMP_URL="http://127.0.0.1:4000/v1"
 
-echo ""
-echo "🔍 Проверка подключения к OMP Gateway ($OMP_URL)..."
-
-is_omp_alive() {
-    local target="$1"
-    local base="${target%/}"
-    if curl -s --connect-timeout 2 "$base/models" >/dev/null 2>&1 || \
-       curl -s --connect-timeout 2 "$base/v1/models" >/dev/null 2>&1 || \
-       curl -s --connect-timeout 2 "http://127.0.0.1:4000/v1/models" >/dev/null 2>&1; then
-        return 0
-    fi
-    return 1
-}
-
-OMP_PID=""
-
-if is_omp_alive "$OMP_URL"; then
-    echo "🟢 OMP Gateway активен и отвечает на запросы!"
-else
-    echo "🟡 OMP Gateway не отвечает. Пробуем автоматически поднять шлюз..."
-    
-    if [ -f "$GATEWAY_DIST" ] && command -v node >/dev/null 2>&1; then
-        echo "🚀 Запуск Open-Antigravity OMP Gateway на порту 4000..."
-        PORT=4000 HOST=127.0.0.1 nohup node "$GATEWAY_DIST" >/tmp/omp_gateway.log 2>&1 &
-        OMP_PID=$!
-        echo "🔹 PID фонового OMP Gateway: $OMP_PID (логи: /tmp/omp_gateway.log)"
-        
-        # Wait up to 6 seconds
-        for i in {1..12}; do
-            if is_omp_alive "$OMP_URL"; then
-                echo "🟢 OMP Gateway успешно запущен и готов к работе!"
-                break
-            fi
-            sleep 0.5
-        done
-    fi
-
-    if ! is_omp_alive "$OMP_URL"; then
-        echo "⚠️  Внимание: OMP Gateway на $OMP_URL поднимется автоматически через main.py."
-    fi
+if is_local_omp_url "$OMP_URL"; then
+    ensure_antigravity_server "$SCRIPT_DIR"
 fi
 
-# --- 5. Launching Geminka ---
+echo ""
+echo "🔍 Проверка подключения к OMP Gateway ($OMP_URL)..."
+ensure_omp_gateway "$GATEWAY_DIST" "$OMP_URL"
+
+# --- 5. Bot ---
 echo ""
 echo "🚀 Запуск Geminka Telegram Bot (Columbina)..."
 echo "================================================================="
-
-cleanup() {
-    echo ""
-    echo "🛑 Остановка Geminka..."
-    if [ -n "$OMP_PID" ]; then
-        kill "$OMP_PID" 2>/dev/null || true
-    fi
-    exit 0
-}
-trap cleanup SIGINT SIGTERM EXIT
 
 if [ "$HAS_UV" = true ]; then
     uv run main.py

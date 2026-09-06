@@ -1,32 +1,51 @@
-import { execSync } from 'child_process';
-import { existsSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 
-const CANDIDATE_PATHS = [
-  '/mnt/c/Users/velunae/AppData/Roaming/Antigravity/User/globalStorage/state.vscdb',
-  path.join(homedir(), '.config/Antigravity/User/globalStorage/state.vscdb'),
-  path.join(homedir(), '.antigravity-ide-server/data/User/globalStorage/state.vscdb'),
-  path.join(homedir(), 'Library/Application Support/Antigravity/User/globalStorage/state.vscdb')
-];
+function getWslStateDbCandidates(): string[] {
+  const usersRoot = '/mnt/c/Users';
+  if (!existsSync(usersRoot)) return [];
 
-function getStateDbPath(): string {
-  for (const p of CANDIDATE_PATHS) {
-    if (existsSync(p)) return p;
+  try {
+    return readdirSync(usersRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .flatMap((entry) => [
+        path.join(usersRoot, entry.name, 'AppData/Roaming/Antigravity/User/globalStorage/state.vscdb'),
+        path.join(usersRoot, entry.name, 'AppData/Roaming/Antigravity IDE/User/globalStorage/state.vscdb')
+      ]);
+  } catch {
+    return [];
   }
-  return CANDIDATE_PATHS[0];
+}
+
+function getCandidatePaths(): string[] {
+  return [
+    process.env.ANTIGRAVITY_STATE_DB,
+    path.join(homedir(), '.config/Antigravity/User/globalStorage/state.vscdb'),
+    path.join(homedir(), '.config/Antigravity IDE/User/globalStorage/state.vscdb'),
+    path.join(homedir(), '.antigravity-ide-server/data/User/globalStorage/state.vscdb'),
+    ...getWslStateDbCandidates(),
+    path.join(homedir(), 'Library/Application Support/Antigravity/User/globalStorage/state.vscdb'),
+    path.join(homedir(), 'Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb')
+  ].filter((candidate): candidate is string => Boolean(candidate));
 }
 
 function queryDb(sql: string): string {
-  try {
-    const dbPath = getStateDbPath();
-    return execSync(`sqlite3 "${dbPath}" "${sql}"`, {
-      encoding: 'utf-8',
-      timeout: 5000
-    }).trim();
-  } catch {
-    return '';
+  for (const dbPath of getCandidatePaths()) {
+    if (!existsSync(dbPath)) continue;
+    try {
+      const result = execFileSync('sqlite3', [dbPath, sql], {
+        encoding: 'utf-8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'ignore']
+      }).trim();
+      if (result) return result;
+    } catch {
+      continue;
+    }
   }
+  return '';
 }
 
 export function getApiKey(): string {

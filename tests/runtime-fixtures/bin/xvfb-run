@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${GEMINKA_TEST_ARGS:?}"
+touch "${GEMINKA_TEST_READY:?}"
+trap 'exit 0' TERM INT
+while true; do
+    sleep 1
+done
