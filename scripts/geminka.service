@@ -1,0 +1,19 @@
+[Unit]
+Description=Geminka (Columbina) Telegram AI Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/velunae/projects/mainstream/geminka-agent
+ExecStart=/home/velunae/.local/bin/uv run main.py
+Restart=always
+RestartSec=3
+KillMode=control-group
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/velunae/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
