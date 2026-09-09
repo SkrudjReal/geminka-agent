@@ -226,6 +226,7 @@ def ensure_runtime_dirs() -> None:
         (ADAPTIVE_STATE_FILE, DATA_DIR / "adaptive_profiles.example.json", '{"profiles":{}}'),
         (DATA_DIR / "active_topics.json", None, '{"topics":{}}'),
         (DATA_DIR / "sessions.json", DATA_DIR / "sessions.example.json", "{}"),
+        (MEMORIES_DIR / "USER.md", MEMORIES_DIR / "USER.example.md", "# User Profile & Preferences\n"),
     ]
 
     for target, example, fallback in file_inits:
