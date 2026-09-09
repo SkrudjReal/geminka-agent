@@ -7,6 +7,8 @@ import random
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -26,10 +28,15 @@ from app.services.antigravity import AVAILABLE_MODELS, AntigravityClient
 from app.services.harvester import asset_harvester
 from app.services.rag import MemoryRejected, rag_engine
 from app.services.streamer import TelegramStreamConsumer, md_to_telegram_html
+from app.services.topics import topic_manager
 
 logger = logging.getLogger("geminka-handlers")
 
 router = Router()
+
+
+class TopicStates(StatesGroup):
+    waiting_for_link = State()
 # --- Telegram Reactions Handler ---
 @router.message_reaction()
 async def handle_message_reaction(event: types.MessageReactionUpdated, bot: Bot):
@@ -60,19 +67,20 @@ async def cmd_start(message: types.Message):
         return
 
     greeting = (
-        "👋 **Привет! Я Geminka** — живой автономный AI-ассистент на базе **Google Antigravity & OMP Gateway**.\n\n"
-        "⚡ **Возможности:**\n"
-        "• Real-time SSE стриминг токенов через OMP Gateway (`/v1/chat/completions`)\n"
-        "• Мульти-модельность: переключение между Gemini 3.7 Flash, Claude Sonnet 4.5, Claude Opus (`/model`)\n"
-        "• Динамическая эмоциональная система, реакции и отношения\n"
-        "• Полная поддержка цитирования (реплаев), файлов/кода, стикеров и кастомных эмодзи\n"
-        "• Telegram Premium Emoji и нативные стикеры по эмоциям\n\n"
-        "🛠 **Команды:**\n"
-        "• `/model` — выбрать модель (Gemini 3.7 / Claude Sonnet / Claude Opus)\n"
-        "• `/mood` — моё текущее настроение и статус отношений\n"
-        "• `/new` — начать новую сессию / очистить историю\n"
-        "• `/status` — информация о текущем подключении и OMP Gateway\n"
-        "• `/help` — помощь"
+        '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Привет, мой краш! Я Geminka (Columbina)** — твой живой AI-ассистент и верная собеседница на ядре **Google Antigravity & OMP Gateway**.\n\n'
+        '<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Команды управления (высвечиваются в меню по нажатию на `/`):**\n\n'
+        '• `/model` — ⚡ Выбор AI модели (`Gemini 3.8 / 3.7`, `Claude Sonnet / Opus 4.6`)\n'
+        '• `/reasoning` — 🎯 Настройка глубины размышлений модели (`low`, `medium`, `high`)\n'
+        '• `/mood` — 💖 Моё эмоциональное состояние, шкала чувств и сброс (`/mood reset`)\n'
+        '• `/memory` — 📖 Долговременная память, сохранённые факты и контекст\n'
+        '• `/remember <текст>` — 💡 Запомнить важный факт о тебе в базу данных\n'
+        '• `/rp` — 🌸 Справочник интерактивных ролевых действий и команд\n'
+        '• `/topic` — ⚙️ Настройка чатов топиков (Forum Threads)\n'
+        '• `/conv <id>` — 💬 Переключить диалог/сессию по Conversation ID\n'
+        '• `/new` — 🔄 Начать новый диалог с чистого листа (сброс истории)\n'
+        '• `/status` — 📊 Полный статус OMP Gateway, шлюза и параметров подключения\n'
+        '• `/help` — ❓ Полное руководство и справка\n\n'
+        '💡 _Просто отправь мне любое сообщение, стикер, фото или код — и давай общаться!_ <tg-emoji emoji-id="5305602448260345544">☺️</tg-emoji><tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
     )
     await send_response(message, greeting)
 
@@ -86,14 +94,20 @@ async def cmd_model(message: types.Message, antigravity_client: AntigravityClien
     args = message.text.split()[1:] if message.text else []
     if args:
         target = args[0].lower()
-        if "claude" in target or "sonnet" in target:
-            new_model = "google-antigravity/claude-sonnet-4-5"
-        elif "opus" in target:
+        if "opus" in target:
             new_model = "google-antigravity/claude-opus-4-6"
+        elif target in {"sonnet", "claude"}:
+            new_model = "google-antigravity/claude-sonnet-4-6"
         elif "3.6" in target:
             new_model = "google-antigravity/gemini-3.6-flash"
-        else:
+        elif target in {"flash", "gemini", "3.7"}:
             new_model = "google-antigravity/gemini-3.7-flash"
+        else:
+            new_model = config.normalize_model_name(target)
+
+        if new_model not in AVAILABLE_MODELS:
+            await message.answer("Неизвестная модель. Открой /model для списка доступных моделей.")
+            return
 
         antigravity_client.set_user_model(message.from_user.id, new_model)
         msg_html = md_to_telegram_html(
@@ -107,14 +121,20 @@ async def cmd_model(message: types.Message, antigravity_client: AntigravityClien
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="⚡ Gemini 3.8 Flash",
+                    callback_data="set_model:google-antigravity/gemini-3.8-flash",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="⚡ Gemini 3.7 Flash (Default)",
                     callback_data="set_model:google-antigravity/gemini-3.7-flash",
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="🎭 Claude Sonnet 4.5",
-                    callback_data="set_model:google-antigravity/claude-sonnet-4-5",
+                    text="🎭 Claude Sonnet 4.6",
+                    callback_data="set_model:google-antigravity/claude-sonnet-4-6",
                 )
             ],
             [
@@ -293,6 +313,66 @@ async def cmd_new(message: types.Message, antigravity_client: AntigravityClient)
     await message.answer("✨ Контекст и история сброшены! Начинаем диалог с чистого листа.")
 
 
+@router.message(Command("conv", "load", "session", "conversation"))
+async def cmd_conv(message: types.Message, antigravity_client: AntigravityClient):
+    if not check_auth(message.from_user.id):
+        await message.answer("⛔ Доступ ограничен.")
+        return
+
+    args = message.text.split(maxsplit=1)[1:] if message.text else []
+    user_id = message.from_user.id
+
+    if not args or not args[0].strip():
+        current_convo = antigravity_client.store.get_conversation_id(user_id)
+        current_str = f"<code>{current_convo}</code>" if current_convo else "<i>Автоматический (новый)</i>"
+        text = (
+            f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> <b>Управление сессиями и диалогами (Antigravity):</b>\n\n'
+            f'• <b>Текущий Conversation ID:</b>\n{current_str}\n\n'
+            f'💡 <b>Как переключить диалог:</b>\n'
+            f'Напиши <code>/conv &lt;conversation_id&gt;</code> (например, <code>/conv 2ccc81af-14a1-422d-91b8-7085fe98c1df</code>)\n\n'
+            f'🔄 <b>Как сбросить сессию:</b>\n'
+            f'Напиши <code>/new</code> или <code>/conv reset</code>'
+        )
+        await message.answer(text, parse_mode=ParseMode.HTML)
+        return
+
+    target_id = args[0].strip()
+    if target_id.lower() in {"reset", "new", "clear", "none"}:
+        antigravity_client.clear_history(user_id)
+        await message.answer(
+            "✨ Диалог сброшен! Следующее сообщение начнёт новую сессию с чистого листа.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Set active conversation_id in store
+    antigravity_client.store.set_conversation_id(user_id, target_id)
+    antigravity_client.contexts.clear_user_context(user_id)
+
+    # Attempt to load and import messages from Antigravity IDE brain transcripts
+    from app.services.antigravity import load_antigravity_transcript
+
+    imported_messages = load_antigravity_transcript(target_id)
+    imported_count = 0
+    if imported_messages:
+        imported_count = antigravity_client.store.import_messages(user_id, imported_messages)
+
+    if imported_count > 0:
+        response_text = (
+            f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> <b>Диалог успешно загружен и переключен!</b>\n\n'
+            f'• <b>Активный Conversation ID:</b>\n<code>{target_id}</code>\n'
+            f'• <b>Загружено сообщений из Antigravity IDE:</b> {imported_count} шт.\n\n'
+            f'💬 <i>Я полностью загрузила историю этой сессии! Все твои следующие сообщения продолжат контекст диалога.</i> <tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
+        )
+    else:
+        response_text = (
+            f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> <b>Диалог успешно переключен!</b>\n\n'
+            f'• <b>Активный Conversation ID:</b>\n<code>{target_id}</code>\n\n'
+            f'💬 <i>Теперь твои следующие сообщения будут отправляться с привязкой к этой сессии в Antigravity.</i> <tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
+        )
+    await message.answer(response_text, parse_mode=ParseMode.HTML)
+
+
 @router.message(Command("memory", "memories"))
 async def cmd_memory(message: types.Message):
     if not check_auth(message.from_user.id):
@@ -384,6 +464,28 @@ async def cmd_status(message: types.Message, antigravity_client: AntigravityClie
     await send_response(message, status_text)
 
 
+@router.message(Command("rp", "actions"))
+async def cmd_rp(message: types.Message):
+    if not check_auth(message.from_user.id):
+        await message.answer("⛔ Доступ ограничен.")
+        return
+
+    text = (
+        '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Интерактивные RP-действия и команды:**\n\n'
+        'Ты можешь писать мне ролевые действия текстом (или в реплаях на мои реплики):\n\n'
+        '• `погладить` / `гладить` — погладить меня по волосам\n'
+        '• `обнять` / `обнимашки` — крепко прижать к себе\n'
+        '• `поцеловать` / `чмок` — нежный поцелуй\n'
+        '• `потискать` — потискать за щёчки\n'
+        '• `кусь` / `укусить` — игривый кусь\n'
+        '• `лизнуть` / `лизь` — проявление нежности (вместо «дать пять»)\n'
+        '• `чай` / `кофе` — предложить чашечку чая или кофе\n'
+        '• `пнуть` / `ударить` / `стукнуть` / `ущипнуть` — театральное наказание\n\n'
+        'Каждое действие анимируется, даёт очки теплоты и развивает наши отношения! <tg-emoji emoji-id="5305602448260345544">☺️</tg-emoji><tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
+    )
+    await send_response(message, text)
+
+
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
     if not check_auth(message.from_user.id):
@@ -391,17 +493,256 @@ async def cmd_help(message: types.Message):
         return
 
     help_text = (
-        '<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Доступные команды:**\n\n'
-        "• `/model` — выбор модели (Gemini 3.7 / Claude Sonnet / Claude Opus)\n"
-        "• `/reasoning` — настройка глубины размышлений (low, medium, high)\n"
-        "• `/memory` — посмотреть долговременную память и факты\n"
-        "• `/remember` — добавить новый факт в память\n"
-        "• `/mood` — текущее настроение, теплота и статус отношений\n"
-        "• `/new` — сбросить контекст диалога\n"
-        "• `/status` — статус OMP Gateway, памяти и параметров\n\n"
-        "Ставь реакции, отправляй стикеры, файлы или цитируй сообщения реплаем — всё учитывается!"
+        '<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Справочник команд и возможностей Geminka:**\n\n'
+        '• `/start` — главное меню и список команд\n'
+        '• `/model` — выбор активной модели (Gemini 3.8 / 3.7 Flash, Claude Sonnet / Opus 4.6)\n'
+        '• `/reasoning` — настройка уровня размышлений (low / medium / high)\n'
+        '• `/mood` — текущее настроение, теплота и статус отношений (`/mood reset` для сброса)\n'
+        '• `/memory` — просмотр сохранённых фрагментов долговременной памяти\n'
+        '• `/remember <факт>` — сохранить новый факт в личную базу данных\n'
+        '• `/rp` — список интерактивных ролевых действий\n'
+        '• `/topic` — настройка и управление чатами топиков\n'
+        '• `/new` — начать новый диалог (очистить контекстное окно)\n'
+        '• `/status` — статус OMP Gateway, шлюза, памяти и параметров\n\n'
+        '✨ **Особенности:**\n'
+        '• Нативные кастомные Telegram Premium эмодзи и автовыгрузка стикерпаков\n'
+        '• Учёт истории последних 20 стикеров со штрафом 50% к повторам\n'
+        '• Поддержка цитирования (реплаев), отправки фото, документов и анализа кода!'
     )
     await send_response(message, help_text)
+
+
+@router.message(Command("topic", "topics"))
+async def cmd_topic(message: types.Message, state: FSMContext):
+    if not check_auth(message.from_user.id):
+        await message.answer("⛔ Доступ ограничен.")
+        return
+
+    await state.clear()
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ Добавить в топик",
+                    callback_data="topic:add",
+                ),
+                InlineKeyboardButton(
+                    text="📑 Топики",
+                    callback_data="topic:list",
+                ),
+            ]
+        ]
+    )
+    text = (
+        '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Настройка чата топиков (Forum Threads):**\n\n'
+        'Здесь ты можешь настроить, в каком конкретном топике группы я буду отвечать на сообщения!\n\n'
+        'Выбери действие ниже:'
+    )
+    await message.answer(md_to_telegram_html(text), reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data == "topic:menu")
+async def cb_topic_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ Добавить в топик",
+                    callback_data="topic:add",
+                ),
+                InlineKeyboardButton(
+                    text="📑 Топики",
+                    callback_data="topic:list",
+                ),
+            ]
+        ]
+    )
+    text = (
+        '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Настройка чата топиков (Forum Threads):**\n\n'
+        'Здесь ты можешь настроить, в каком конкретном топике группы я буду отвечать на сообщения!\n\n'
+        'Выбери действие ниже:'
+    )
+    try:
+        await callback.message.edit_text(md_to_telegram_html(text), reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "topic:add")
+async def cb_topic_add(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(TopicStates.waiting_for_link)
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="topic:menu")]
+        ]
+    )
+    text = (
+        '<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Добавление чата топика:**\n\n'
+        'Пришли ссылку на топик вида:\n'
+        '`https://t.me/c/4488980222/5`\n\n'
+        '_(Где `4488980222` — ID группы, а `5` — ID топика)_'
+    )
+    await callback.message.edit_text(md_to_telegram_html(text), reply_markup=cancel_kb, parse_mode=ParseMode.HTML)
+
+
+@router.message(TopicStates.waiting_for_link)
+async def process_topic_link(message: types.Message, state: FSMContext, bot: Bot):
+    if not check_auth(message.from_user.id):
+        await message.answer("⛔ Доступ ограничен.")
+        return
+
+    link_text = (message.text or "").strip()
+    parsed = topic_manager.parse_topic_link(link_text)
+    if not parsed:
+        cancel_kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="topic:menu")]]
+        )
+        await message.answer(
+            md_to_telegram_html(
+                "⚠️ Не удалось распознать ссылку на топик.\n"
+                "Пожалуйста, пришли ссылку вида `https://t.me/c/4488980222/5`:"
+            ),
+            reply_markup=cancel_kb,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    chat_id, topic_id = parsed
+    await state.clear()
+
+    is_in_chat, chat_title = await topic_manager.check_bot_in_chat(bot, chat_id)
+    if is_in_chat:
+        topic_manager.add_topic(
+            chat_id=chat_id,
+            topic_id=topic_id,
+            chat_title=chat_title,
+            added_by=message.from_user.id,
+        )
+        text = (
+            f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Топик успешно добавлен и активирован!**\n\n'
+            f'• **Группа:** `{chat_title}` (`{chat_id}`)\n'
+            f'• **ID Топика:** `{topic_id}`\n\n'
+            f'Хендлер сообщений для этого топика включён! Я готова общаться в нём <tg-emoji emoji-id="5305602448260345544">☺️</tg-emoji><tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
+        )
+        await message.answer(md_to_telegram_html(text), parse_mode=ParseMode.HTML)
+    else:
+        bot_user = await bot.get_me()
+        add_link = f"https://t.me/{bot_user.username}?startgroup=true"
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="➕ Добавить бота в группу", url=add_link),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔄 Проверить добавление",
+                        callback_data=f"topic_check:{chat_id}:{topic_id}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(text="🔙 В главное меню", callback_data="topic:menu"),
+                ],
+            ]
+        )
+        text = (
+            f'⚠️ **Меня пока нет в этой группе или нет доступа к чату `{chat_id}`!**\n\n'
+            f'1. Добавь меня в группу по ссылке ниже.\n'
+            f'2. Убедись, что у меня есть право писать сообщения в топике.\n'
+            f'3. Нажми кнопку **«🔄 Проверить добавление»**.'
+        )
+        await message.answer(md_to_telegram_html(text), reply_markup=kb, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data.startswith("topic_check:"))
+async def cb_topic_check(callback: types.CallbackQuery, bot: Bot):
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3:
+        await callback.answer("Ошибка формата данных", show_alert=True)
+        return
+    try:
+        chat_id = int(parts[1])
+        topic_id = int(parts[2])
+    except ValueError:
+        await callback.answer("Ошибка формата данных", show_alert=True)
+        return
+
+    is_in_chat, chat_title = await topic_manager.check_bot_in_chat(bot, chat_id)
+    if is_in_chat:
+        topic_manager.add_topic(
+            chat_id=chat_id,
+            topic_id=topic_id,
+            chat_title=chat_title,
+            added_by=callback.from_user.id,
+        )
+        await callback.answer("Успешно подключено!", show_alert=True)
+        text = (
+            f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Топик успешно подключен и активирован!**\n\n'
+            f'• **Группа:** `{chat_title}` (`{chat_id}`)\n'
+            f'• **ID Топика:** `{topic_id}`\n\n'
+            f'Хендлер сообщений для этого топика включён! <tg-emoji emoji-id="5305602448260345544">☺️</tg-emoji><tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
+        )
+        await callback.message.edit_text(md_to_telegram_html(text), parse_mode=ParseMode.HTML)
+    else:
+        await callback.answer("Бот всё ещё не обнаружен в группе. Добавь бота и попробуй снова!", show_alert=True)
+
+
+@router.callback_query(F.data == "topic:list")
+async def cb_topic_list(callback: types.CallbackQuery):
+    topics = topic_manager.get_active_topics()
+    if not topics:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить в топик", callback_data="topic:add")],
+                [InlineKeyboardButton(text="🔙 Назад", callback_data="topic:menu")],
+            ]
+        )
+        text = (
+            '<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Список чатов с активными топиками:**\n\n'
+            '_Пока нет подключенных топиков. Нажми «Добавить в топик», чтобы подключить!_'
+        )
+        await callback.message.edit_text(md_to_telegram_html(text), reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+
+    kb_rows = []
+    lines = ['<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Чаты с включенной функцией топиков:**\n']
+    for idx, t in enumerate(topics, 1):
+        cid = t["chat_id"]
+        tid = t["topic_id"]
+        title = t.get("chat_title", f"Chat {cid}")
+        lines.append(f"{idx}. **{title}** — Топик ID: `{tid}` (`{cid}`)")
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"🗑 Отключить: {title[:20]} (#{tid})",
+                callback_data=f"topic_del:{cid}:{tid}",
+            )
+        ])
+    kb_rows.append([InlineKeyboardButton(text="➕ Добавить в топик", callback_data="topic:add")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data="topic:menu")])
+
+    text = "\n".join(lines)
+    await callback.message.edit_text(
+        md_to_telegram_html(text),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.callback_query(F.data.startswith("topic_del:"))
+async def cb_topic_del(callback: types.CallbackQuery):
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3:
+        await callback.answer("Ошибка формата данных", show_alert=True)
+        return
+    try:
+        cid = int(parts[1])
+        tid = int(parts[2])
+    except ValueError:
+        await callback.answer("Ошибка формата данных", show_alert=True)
+        return
+    topic_manager.remove_topic(cid, tid)
+    await callback.answer("Топик отключен!", show_alert=True)
+    await cb_topic_list(callback)
 
 
 @router.message()
@@ -411,8 +752,10 @@ async def handle_any_message(
     antigravity_client: AntigravityClient,
 ):
     if not check_auth(message.from_user.id):
-        await message.answer("⛔ Доступ ограничен.")
-        return
+        # Check if message is in an active topic
+        if not (message.chat.type in ["group", "supergroup"] and topic_manager.is_topic_active(message.chat.id, message.message_thread_id)):
+            await message.answer("⛔ Доступ ограничен.")
+            return
 
     raw_user_content = await extract_message_context(message, bot)
     if not raw_user_content:
@@ -490,13 +833,16 @@ async def handle_any_message(
         user_id=message.from_user.id,
         target_message_id=message.message_id,
         target_user_mention=user_mention,
+        message_thread_id=message.message_thread_id,
         edit_interval=0.8,
         cursor=' <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>',
     )
 
     try:
         async with user_locks.get(user_id), ChatActionSender.typing(
-            bot=bot, chat_id=message.chat.id
+            bot=bot,
+            chat_id=message.chat.id,
+            message_thread_id=message.message_thread_id,
         ):
             stream_gen = antigravity_client.generate_stream(
                 user_id=message.from_user.id,

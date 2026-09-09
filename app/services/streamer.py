@@ -333,7 +333,54 @@ def md_to_telegram_html(md: str) -> str:
     for idx, tag in enumerate(saved_html_tags):
         md = md.replace(f"%%TGHTMLTAG_{idx}%%", tag)
 
-    return md
+    return balance_html_tags(md)
+
+
+def balance_html_tags(html_text: str) -> str:
+    """Ensures all opened Telegram HTML tags are properly closed and unmatched closing tags removed."""
+    if not html_text:
+        return ""
+    tag_re = re.compile(r"</?([a-zA-Z0-9_\-]+)(?:\s+[^>]*)?>")
+    stack: list[str] = []
+    output_parts: list[str] = []
+    last_idx = 0
+
+    for match in tag_re.finditer(html_text):
+        output_parts.append(html_text[last_idx:match.start()])
+        full_tag = match.group(0)
+        tag_name = match.group(1).lower()
+        last_idx = match.end()
+
+        if tag_name in ("tg-emoji", "br", "hr", "img") or full_tag.endswith("/>"):
+            output_parts.append(full_tag)
+            continue
+
+        if full_tag.startswith("</"):
+            if stack and stack[-1] == tag_name:
+                stack.pop()
+                output_parts.append(full_tag)
+            elif tag_name in stack:
+                # Close down to this tag
+                while stack and stack[-1] != tag_name:
+                    unclosed = stack.pop()
+                    output_parts.append(f"</{unclosed}>")
+                if stack:
+                    stack.pop()
+                output_parts.append(full_tag)
+            else:
+                # Orphan closing tag without opener -> drop it to avoid Telegram parse error
+                pass
+        else:
+            stack.append(tag_name)
+            output_parts.append(full_tag)
+
+    output_parts.append(html_text[last_idx:])
+
+    # Append closing tags for any remaining unclosed elements in reverse order
+    for tag_name in reversed(stack):
+        output_parts.append(f"</{tag_name}>")
+
+    return "".join(output_parts)
 
 
 def split_telegram_text(text: str, limit: int = 3_500) -> list[str]:
@@ -393,6 +440,7 @@ class TelegramStreamConsumer:
         user_id: Optional[int] = None,
         target_message_id: Optional[int] = None,
         target_user_mention: Optional[str] = None,
+        message_thread_id: Optional[int] = None,
         edit_interval: float = 0.8,
         cursor: str = ' <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>',
     ):
@@ -401,6 +449,7 @@ class TelegramStreamConsumer:
         self.user_id = user_id
         self.target_message_id = target_message_id
         self.target_user_mention = target_user_mention
+        self.message_thread_id = message_thread_id
         self.edit_interval = edit_interval
         self.cursor = cursor
         self.message_id: Optional[int] = None
@@ -424,6 +473,7 @@ class TelegramStreamConsumer:
                 self.chat_id,
                 html_content,
                 parse_mode=ParseMode.HTML,
+                message_thread_id=self.message_thread_id,
                 reply_parameters=reply_params,
             )
             self.message_id = msg.message_id
@@ -436,6 +486,7 @@ class TelegramStreamConsumer:
                     self.chat_id,
                     content,
                     parse_mode=None,
+                    message_thread_id=self.message_thread_id,
                     reply_parameters=reply_params,
                 )
                 self.message_id = msg.message_id
@@ -576,6 +627,7 @@ class TelegramStreamConsumer:
                         self.chat_id,
                         html_text,
                         parse_mode=ParseMode.HTML,
+                        message_thread_id=self.message_thread_id,
                         reply_parameters=reply_params,
                     )
                 except Exception:
@@ -583,6 +635,7 @@ class TelegramStreamConsumer:
                         self.chat_id,
                         chunks[0],
                         parse_mode=None,
+                        message_thread_id=self.message_thread_id,
                         reply_parameters=reply_params,
                     )
             else:
@@ -593,9 +646,15 @@ class TelegramStreamConsumer:
                         self.chat_id,
                         md_to_telegram_html(chunk),
                         parse_mode=ParseMode.HTML,
+                        message_thread_id=self.message_thread_id,
                     )
                 except TelegramBadRequest:
-                    await self.bot.send_message(self.chat_id, chunk, parse_mode=None)
+                    await self.bot.send_message(
+                        self.chat_id,
+                        chunk,
+                        parse_mode=None,
+                        message_thread_id=self.message_thread_id,
+                    )
         elif self.message_id:
             try:
                 await self.bot.delete_message(self.chat_id, self.message_id)
@@ -614,6 +673,7 @@ class TelegramStreamConsumer:
                     self.chat_id,
                     rp_banner,
                     parse_mode=ParseMode.HTML,
+                    message_thread_id=self.message_thread_id,
                     reply_parameters=rp_reply_params,
                 )
             except Exception as e:
@@ -631,6 +691,7 @@ class TelegramStreamConsumer:
                         chat_id=self.chat_id,
                         photo=FSInputFile(str(photo1_path)),
                         caption=caption1,
+                        message_thread_id=self.message_thread_id,
                     )
                     await asyncio.sleep(0.5)
 
@@ -643,6 +704,7 @@ class TelegramStreamConsumer:
                             caption=html_caption,
                             parse_mode=ParseMode.HTML,
                             has_spoiler=True,
+                            message_thread_id=self.message_thread_id,
                             reply_parameters=ReplyParameters(message_id=p1_msg.message_id),
                         )
                 except Exception as e:
@@ -659,6 +721,7 @@ class TelegramStreamConsumer:
                 await self.bot.send_sticker(
                     self.chat_id,
                     sticker_file_id,
+                    message_thread_id=self.message_thread_id,
                     reply_parameters=sticker_reply_params,
                 )
                 if self.user_id:

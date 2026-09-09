@@ -1,12 +1,4 @@
-/**
- * Model name and reasoning effort mapping to Antigravity internal IDs.
- *
- * Gemini 3.7 Flash enums:
- * - High Thinking:   MODEL_PLACEHOLDER_M298
- * - Medium Thinking: MODEL_PLACEHOLDER_M299
- * - Low Thinking:    MODEL_PLACEHOLDER_M300
- */
-
+/** IDs verified against LanguageServer.GetCascadeModelConfig, 2026-09-07. */
 export interface ModelMapping {
   id: string;
   internalId: string;
@@ -14,77 +6,39 @@ export interface ModelMapping {
   provider: string;
 }
 
-const MODEL_MAP: ModelMapping[] = [
-  {
-    id: 'google-antigravity/gemini-3.7-flash',
-    internalId: 'MODEL_PLACEHOLDER_M298',
-    displayName: 'Gemini 3.7 Flash (High)',
-    provider: 'google',
-  },
-  {
-    id: 'google-antigravity/gemini-3.7-flash-high',
-    internalId: 'MODEL_PLACEHOLDER_M298',
-    displayName: 'Gemini 3.7 Flash (High)',
-    provider: 'google',
-  },
-  {
-    id: 'google-antigravity/gemini-3.7-flash-medium',
-    internalId: 'MODEL_PLACEHOLDER_M299',
-    displayName: 'Gemini 3.7 Flash (Medium)',
-    provider: 'google',
-  },
-  {
-    id: 'google-antigravity/gemini-3.7-flash-low',
-    internalId: 'MODEL_PLACEHOLDER_M300',
-    displayName: 'Gemini 3.7 Flash (Low)',
-    provider: 'google',
-  },
-  {
-    id: 'gemini-3.7-flash',
-    internalId: 'MODEL_PLACEHOLDER_M298',
-    displayName: 'Gemini 3.7 Flash',
-    provider: 'google',
-  },
-];
+const FAMILIES: Record<string, [string, string, string]> = {
+  'gemini-3.8-flash': ['MODEL_PLACEHOLDER_M320', 'MODEL_PLACEHOLDER_M319', 'MODEL_PLACEHOLDER_M318'],
+  'gemini-3.7-flash': ['MODEL_PLACEHOLDER_M300', 'MODEL_PLACEHOLDER_M299', 'MODEL_PLACEHOLDER_M298'],
+  'gemini-3.6-flash': ['MODEL_PLACEHOLDER_M73', 'MODEL_PLACEHOLDER_M72', 'MODEL_PLACEHOLDER_M71'],
+};
+const FIXED: Record<string, string> = {
+  'claude-sonnet-4-6': 'MODEL_PLACEHOLDER_M35',
+  'claude-opus-4-6': 'MODEL_PLACEHOLDER_M26',
+};
 
-/**
- * Resolves model name and reasoning effort level to the exact Antigravity enum.
- */
 export function resolveModelId(externalName?: string, reasoningEffort?: string): string {
-  const effort = (reasoningEffort || '').toLowerCase().trim();
-
-  if (effort === 'low' || effort === 'minimal') {
-    return 'MODEL_PLACEHOLDER_M300'; // Gemini 3.7 Flash Low Thinking
-  }
-  if (effort === 'medium') {
-    return 'MODEL_PLACEHOLDER_M299'; // Gemini 3.7 Flash Medium Thinking
-  }
-  if (effort === 'high') {
-    return 'MODEL_PLACEHOLDER_M298'; // Gemini 3.7 Flash High Thinking
-  }
-
-  const name = (externalName || '').toLowerCase().trim();
-  if (name.includes('low')) return 'MODEL_PLACEHOLDER_M300';
-  if (name.includes('medium')) return 'MODEL_PLACEHOLDER_M299';
-  if (name.includes('high')) return 'MODEL_PLACEHOLDER_M298';
-
-  return 'MODEL_PLACEHOLDER_M298';
+  const name = (externalName || 'gemini-3.7-flash').toLowerCase().trim().replace(/^google-antigravity\//, '');
+  if (FIXED[name]) return FIXED[name];
+  const suffix = name.match(/-(low|medium|high)$/);
+  const family = suffix ? name.slice(0, -suffix[0].length) : name;
+  if (!FAMILIES[family]) throw new Error(`Unsupported model: ${externalName}`);
+  const effort = (reasoningEffort || suffix?.[1] || 'high').toLowerCase().trim();
+  const index = ['low', 'medium', 'high'].indexOf(effort === 'minimal' ? 'low' : effort);
+  if (index < 0) throw new Error(`Unsupported reasoning effort: ${reasoningEffort}`);
+  return FAMILIES[family][index];
 }
 
 export function getAllModels(): ModelMapping[] {
-  return MODEL_MAP;
+  return [...Object.keys(FAMILIES), ...Object.keys(FIXED)].map(name => ({
+    id: `google-antigravity/${name}`,
+    internalId: resolveModelId(name),
+    displayName: name,
+    provider: name.startsWith('claude') ? 'anthropic' : 'google',
+  }));
 }
 
 export function toOpenAIModelsResponse() {
-  return {
-    object: 'list',
-    data: [
-      {
-        id: 'google-antigravity/gemini-3.7-flash',
-        object: 'model',
-        created: Math.floor(Date.now() / 1000),
-        owned_by: 'google',
-      },
-    ],
-  };
+  return { object: 'list', data: getAllModels().map(model => ({
+    id: model.id, object: 'model', created: Math.floor(Date.now() / 1000), owned_by: model.provider,
+  })) };
 }

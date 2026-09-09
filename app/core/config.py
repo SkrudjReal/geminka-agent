@@ -14,6 +14,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env")
 
 MODEL_ALIASES = {
+    "3.8": "google-antigravity/gemini-3.8-flash",
+    "gemini3.8": "google-antigravity/gemini-3.8-flash",
+    "gemini-3.8": "google-antigravity/gemini-3.8-flash",
+    "gemini-3.8-flash": "google-antigravity/gemini-3.8-flash",
     "flash": "google-antigravity/gemini-3.7-flash",
     "flash-3.7": "google-antigravity/gemini-3.7-flash",
     "gemini-3.7-flash": "google-antigravity/gemini-3.7-flash",
@@ -208,8 +212,43 @@ API_MAX_RETRIES = settings.api_max_retries
 
 
 def ensure_runtime_dirs() -> None:
+    """Ensure all required runtime directories and data files exist with safe defaults."""
+    import shutil
+
     for directory in (DATA_DIR, MEMORIES_DIR, DOWNLOADS_DIR, STICKERS_CACHE_DIR, PHOTOS_CACHE_DIR):
         directory.mkdir(parents=True, exist_ok=True)
+
+    # Safe file initialization map: (target_file, example_file, fallback_json_str)
+    file_inits = [
+        (USER_ASSETS_FILE, DATA_DIR / "user_assets.example.json", '{"custom_emojis":{},"stickers":{},"sticker_packs":{},"user_preferences":{},"recent_sent_stickers":{}}'),
+        (STICKERS_FILE, DATA_DIR / "bot_stickers.example.json", "[]"),
+        (EMOTIONAL_STATE_FILE, DATA_DIR / "emotional_state.example.json", '{"state":{},"users":{}}'),
+        (ADAPTIVE_STATE_FILE, DATA_DIR / "adaptive_profiles.example.json", '{"profiles":{}}'),
+        (DATA_DIR / "active_topics.json", None, '{"topics":{}}'),
+        (DATA_DIR / "sessions.json", DATA_DIR / "sessions.example.json", "{}"),
+    ]
+
+    for target, example, fallback in file_inits:
+        if not target.exists():
+            if example and example.exists():
+                try:
+                    shutil.copy2(example, target)
+                except Exception:
+                    target.write_text(fallback, encoding="utf-8")
+            else:
+                target.write_text(fallback, encoding="utf-8")
+
+    # Alias user_stickers.json -> user_assets.json if accessed
+    user_stickers_alias = DATA_DIR / "user_stickers.json"
+    if not user_stickers_alias.exists() and USER_ASSETS_FILE.exists():
+        try:
+            user_stickers_alias.symlink_to(USER_ASSETS_FILE.name)
+        except Exception:
+            pass
+
+
+# Ensure directories and default files on module import
+ensure_runtime_dirs()
 
 
 def get_system_prompt() -> str:

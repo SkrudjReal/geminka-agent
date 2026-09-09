@@ -7,6 +7,8 @@ import json
 import logging
 import random
 from collections.abc import AsyncGenerator
+from pathlib import Path
+import re
 from typing import Any
 
 import httpx
@@ -19,7 +21,11 @@ from app.services.rag import RAGMemoryEngine, rag_engine
 logger = logging.getLogger(__name__)
 
 AVAILABLE_MODELS = [
+    "google-antigravity/gemini-3.8-flash",
     "google-antigravity/gemini-3.7-flash",
+    "google-antigravity/gemini-3.6-flash",
+    "google-antigravity/claude-sonnet-4-6",
+    "google-antigravity/claude-opus-4-6",
 ]
 REASONING_LEVELS = {"low", "medium", "high"}
 
@@ -75,9 +81,10 @@ class AntigravityClient:
 
     def set_user_model(self, user_id: int, model_name: str) -> None:
         normalized = config.normalize_model_name(model_name)
-        if normalized not in AVAILABLE_MODELS and not normalized.startswith("google-antigravity/"):
+        if normalized not in AVAILABLE_MODELS:
             raise ValueError(f"Unsupported model: {model_name}")
         self.store.set_preference(user_id, "model", normalized)
+        self.store.set_conversation_id(user_id, None)
 
     def get_user_reasoning(self, user_id: int) -> str:
         return (
@@ -193,7 +200,7 @@ class AntigravityClient:
         )
         runtime_context = (
             f"[ТЕКУЩЕЕ СОСТОЯНИЕ РЕЖИМА РАССУЖДЕНИЙ / REASONING EFFORT]:\n"
-            f"• Модель: Gemini 3.7 Flash\n"
+            f"• Модель: {model}\n"
             f"• Активный уровень Reasoning Effort: {reasoning_effort.upper()} ({reasoning_desc})."
         )
 
@@ -318,3 +325,48 @@ class AntigravityClient:
 
 # Backward compatibility aliases
 OMPClient = AntigravityClient
+
+
+def load_antigravity_transcript(conversation_id: str) -> list[tuple[str, str]]:
+    """Loads and parses dialogue messages from Antigravity IDE brain transcript.jsonl."""
+    if not conversation_id or not conversation_id.strip():
+        return []
+
+    clean_id = conversation_id.strip()
+    paths_to_check = [
+        Path.home() / ".gemini" / "antigravity-ide" / "brain" / clean_id / ".system_generated" / "logs" / "transcript.jsonl",
+        Path.home() / ".gemini" / "antigravity-ide" / "brain" / clean_id / ".system_generated" / "logs" / "transcript_full.jsonl",
+        Path.home() / ".gemini" / "brain" / clean_id / ".system_generated" / "logs" / "transcript.jsonl",
+        Path("/home/velunae/.gemini/antigravity-ide/brain") / clean_id / ".system_generated" / "logs" / "transcript.jsonl",
+    ]
+
+    for path in paths_to_check:
+        if path.exists():
+            messages: list[tuple[str, str]] = []
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                            src = data.get("source")
+                            tp = data.get("type")
+                            content = data.get("content", "")
+                            if src == "USER_EXPLICIT" and tp == "USER_INPUT":
+                                m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", content, flags=re.DOTALL)
+                                user_text = m.group(1).strip() if m else content.strip()
+                                if user_text:
+                                    messages.append(("user", user_text))
+                            elif src == "MODEL" and tp == "PLANNER_RESPONSE" and content:
+                                messages.append(("assistant", content.strip()))
+                        except Exception:
+                            continue
+                if messages:
+                    logger.info(f"Loaded {len(messages)} messages from Antigravity transcript at {path}")
+                    return messages
+            except Exception as exc:
+                logger.warning(f"Failed to read Antigravity transcript at {path}: {exc}")
+
+    return []

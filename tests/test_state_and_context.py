@@ -32,3 +32,35 @@ def test_preferences_survive_new_store_instance(tmp_path) -> None:
     path = tmp_path / "state.db"
     StateStore(path).set_preference(7, "reasoning", "high")
     assert StateStore(path).get_preferences(7)["reasoning"] == "high"
+
+
+def test_conversation_id_storage_and_switch(tmp_path) -> None:
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    assert store.get_conversation_id(42) is None
+
+    store.set_conversation_id(42, "2ccc81af-14a1-422d-91b8-7085fe98c1df")
+    assert store.get_conversation_id(42) == "2ccc81af-14a1-422d-91b8-7085fe98c1df"
+
+    store.set_conversation_id(42, None)
+    assert store.get_conversation_id(42) is None
+
+
+def test_import_messages(tmp_path) -> None:
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    store.add_exchange(1, "old user", "old bot")
+
+    messages_to_import = [
+        ("user", "first message"),
+        ("assistant", "first reply"),
+        ("user", "second message"),
+        ("assistant", "second reply"),
+    ]
+    imported = store.import_messages(1, messages_to_import)
+    assert imported == 4
+
+    history = store.get_messages(1)
+    assert len(history) == 4
+    assert history[0]["content"] == "first message"
+    assert history[-1]["content"] == "second reply"

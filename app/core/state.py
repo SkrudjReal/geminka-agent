@@ -174,6 +174,32 @@ class StateStore:
         with self._lock, self._connect() as connection:
             connection.execute("DELETE FROM conversation_messages WHERE user_id = ?", (user_id,))
 
+    def import_messages(
+        self,
+        user_id: int,
+        messages: list[tuple[str, str]],
+        *,
+        retain_messages: int = 200,
+    ) -> int:
+        """Atomically replaces and imports history messages for a user session."""
+        now = time.time()
+        trimmed = messages[-retain_messages:] if len(messages) > retain_messages else messages
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM conversation_messages WHERE user_id = ?", (user_id,))
+            records = [
+                (user_id, role, content, now + idx * 0.001)
+                for idx, (role, content) in enumerate(trimmed)
+            ]
+            if records:
+                connection.executemany(
+                    "INSERT INTO conversation_messages(user_id, role, content, created_at) "
+                    "VALUES(?, ?, ?, ?)",
+                    records,
+                )
+            connection.commit()
+        return len(records)
+
     def list_memories(self, user_id: int) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(

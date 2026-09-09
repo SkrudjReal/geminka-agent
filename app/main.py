@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeDefault
 
 from app.bot.handlers import router
 from app.bot.middlewares import OwnerAuthMiddleware
@@ -16,6 +17,30 @@ from app.services.broadcaster import broadcast
 from app.services.omp_gateway import start_omp_gateway_task
 
 logger = logging.getLogger("geminka-main")
+
+
+async def setup_bot_commands(bot: Bot) -> None:
+    """Configures visible Telegram bot commands menu for private chats and default scope."""
+    commands = [
+        BotCommand(command="start", description="👋 Главное меню и знакомство с Geminka"),
+        BotCommand(command="model", description="⚡ Выбор AI модели (Gemini 3.8 / Claude 4.6)"),
+        BotCommand(command="reasoning", description="🎯 Настройка мышления (Reasoning Effort)"),
+        BotCommand(command="mood", description="💖 Настроение, шкала чувств и сброс эмоций"),
+        BotCommand(command="memory", description="📖 Долговременная память и сохранённые факты"),
+        BotCommand(command="remember", description="💡 Запомнить новый факт о тебе"),
+        BotCommand(command="rp", description="🌸 Справочник интерактивных RP-действий"),
+        BotCommand(command="topic", description="⚙️ Настройка чатов топиков (Forum Threads)"),
+        BotCommand(command="conv", description="💬 Переключить диалог/сессию по ID"),
+        BotCommand(command="new", description="🔄 Начать новый диалог (сбросить контекст)"),
+        BotCommand(command="status", description="🌟 Статус шлюза OMP, движка и метрики"),
+        BotCommand(command="help", description="❓ Полное руководство и помощь"),
+    ]
+    try:
+        await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+        logger.info("Bot commands successfully registered for all private chats.")
+    except Exception as e:
+        logger.warning("Failed to register bot commands: %s", e)
 
 
 async def main() -> None:
@@ -58,7 +83,10 @@ async def main() -> None:
     logger.info("Starting Geminka Telegram Bot (Antigravity Connect/SSE + Clean Architecture)...")
     await bot.delete_webhook(drop_pending_updates=False)
 
-    # 5. Safe startup notification via dedicated broadcaster service
+    # 5. Register command menu for all private chats
+    await setup_bot_commands(bot)
+
+    # 6. Safe startup notification via dedicated broadcaster service
     targets = set(config.settings.allowed_users)
 
     startup_text = (
