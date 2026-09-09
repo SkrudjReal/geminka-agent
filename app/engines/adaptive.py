@@ -50,12 +50,12 @@ PSYCHOTYPES = {
 class UserPsychotypeProfile:
     user_id: int
     psychotype: str = "dominant_leader"
-    avg_message_length: int = 15  # avg word count
-    slang_affinity: int = 70  # 0 to 100
-    dominant_score: int = 80  # 0 to 100
-    playful_score: int = 80  # 0 to 100
-    romantic_score: int = 90  # 0 to 100
-    technical_score: int = 50  # 0 to 100
+    avg_message_length: int = 13  # avg word count
+    slang_affinity: int = 100  # 0 to 100
+    dominant_score: int = 100  # 0 to 100
+    playful_score: int = 100  # 0 to 100
+    romantic_score: int = 100  # 0 to 100
+    technical_score: int = 100  # 0 to 100
     observed_traits: List[str] = field(default_factory=list)
     recent_messages_sample: List[str] = field(default_factory=list)
     last_updated: float = field(default_factory=time.time)
@@ -87,7 +87,20 @@ class AdaptiveEngine:
     def get_profile(self, user_id: int) -> UserPsychotypeProfile:
         uid_str = str(user_id)
         if uid_str not in self.profiles:
-            self.profiles[uid_str] = UserPsychotypeProfile(user_id=user_id)
+            if "default" in self.profiles:
+                d = self.profiles["default"]
+                self.profiles[uid_str] = UserPsychotypeProfile(
+                    user_id=user_id,
+                    psychotype=d.psychotype,
+                    avg_message_length=d.avg_message_length,
+                    slang_affinity=d.slang_affinity,
+                    dominant_score=d.dominant_score,
+                    playful_score=d.playful_score,
+                    romantic_score=d.romantic_score,
+                    technical_score=d.technical_score,
+                )
+            else:
+                self.profiles[uid_str] = UserPsychotypeProfile(user_id=user_id)
             self.save()
         return self.profiles[uid_str]
 

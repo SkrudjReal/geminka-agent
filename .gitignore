@@ -34,7 +34,13 @@ ENV/
 bot.log
 
 # User Runtime Data & Sessions
-data/
+data/*
+!data/*.example.json
+!data/bot_stickers.json
+!data/emotional_state.json
+!data/adaptive_profiles.json
+!data/user_assets.json
+!data/bot_stickers.example.json
 memories/
 downloads/
 *.db

@@ -43,11 +43,11 @@ RELATIONSHIP_STAGES = [
 @dataclass
 class EmotionalState:
     user_id: int
-    mood: str = "cheerful"
-    energy: int = 90  # 0 to 100
-    affection: int = 60  # 0 to 100
-    affinity: int = 78  # Long-term bond: 0 to 200+
-    warmth: int = 80  # Dynamic warmth/coldness level: 0 to 100
+    mood: str = "playful"
+    energy: int = 99  # 0 to 100
+    affection: int = 100  # 0 to 100
+    affinity: int = 200  # Long-term bond: 0 to 200+
+    warmth: int = 96  # Dynamic warmth/coldness level: 0 to 100
     total_interactions: int = 0
     last_interaction_ts: float = field(default_factory=time.time)
     memories: List[str] = field(default_factory=list)
@@ -80,7 +80,7 @@ class EmotionalEngine:
                 valid_fields = {f.name for f in fields(EmotionalState)}
                 for uid_str, s_dict in data.items():
                     if "warmth" not in s_dict:
-                        s_dict["warmth"] = 80
+                        s_dict["warmth"] = 96
                     filtered_dict = {k: v for k, v in s_dict.items() if k in valid_fields}
                     self.states[uid_str] = EmotionalState(**filtered_dict)
                 logger.info(f"Loaded emotional states for {len(self.states)} users.")
@@ -97,7 +97,18 @@ class EmotionalEngine:
     def get_state(self, user_id: int) -> EmotionalState:
         uid_str = str(user_id)
         if uid_str not in self.states:
-            self.states[uid_str] = EmotionalState(user_id=user_id)
+            if "default" in self.states:
+                d = self.states["default"]
+                self.states[uid_str] = EmotionalState(
+                    user_id=user_id,
+                    mood=d.mood,
+                    energy=d.energy,
+                    affection=d.affection,
+                    affinity=d.affinity,
+                    warmth=d.warmth,
+                )
+            else:
+                self.states[uid_str] = EmotionalState(user_id=user_id)
             self.save()
         return self.states[uid_str]
 
