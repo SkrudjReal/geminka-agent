@@ -159,12 +159,12 @@ UV_PATH="$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")"
 
 mkdir -p "$SYSTEMD_USER_DIR"
 
-if [ -f "$SERVICE_FILE" ]; then
+if [ -f "$SERVICE_FILE" ] && grep -q "start.sh" "$SERVICE_FILE" 2>/dev/null; then
     echo ""
     echo "🔹 Сервис systemd $SERVICE_NAME уже существует (пересоздание не требуется)."
 else
     echo ""
-    echo "⚙️ Регистрация нового systemd сервиса: $SERVICE_FILE..."
+    echo "⚙️ Настройка systemd сервиса: $SERVICE_FILE..."
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Geminka (Columbina) Telegram AI Agent
@@ -174,12 +174,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=$UV_PATH run main.py
+ExecStart=$SCRIPT_DIR/scripts/start.sh
 Restart=always
 RestartSec=3
 KillMode=control-group
 Environment=PYTHONUNBUFFERED=1
-Environment=PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=$HOME/.local/bin:$HOME/.nvm/versions/node/v24.12.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 StandardOutput=journal
 StandardError=journal
 

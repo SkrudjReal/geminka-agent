@@ -6,12 +6,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/velunae/projects/mainstream/geminka-agent
-ExecStart=/home/velunae/.local/bin/uv run main.py
+ExecStart=/home/velunae/projects/mainstream/geminka-agent/scripts/start.sh
 Restart=always
 RestartSec=3
 KillMode=control-group
 Environment=PYTHONUNBUFFERED=1
-Environment=PATH=/home/velunae/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/home/velunae/.local/bin:/home/velunae/.nvm/versions/node/v24.12.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 StandardOutput=journal
 StandardError=journal
 
