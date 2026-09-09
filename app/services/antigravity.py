@@ -29,10 +29,8 @@ AVAILABLE_MODELS = [
 ]
 REASONING_LEVELS = {"low", "medium", "high"}
 
-# Reasoning effort defaults per SKILL.md:
-# gemini-3.7-flash and google-antigravity models throw 400 "Thinking level MINIMAL is not supported"
-# if reasoning_effort is absent or minimal. Level 'high' may cause 502 thought-only responses.
-DEFAULT_REASONING_EFFORT = "medium"
+# Reasoning effort defaults:
+DEFAULT_REASONING_EFFORT = "high"
 
 
 class GatewayError(RuntimeError):

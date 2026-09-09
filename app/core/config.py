@@ -106,7 +106,7 @@ class Settings:
         else:
             owner_user_id = allowed_users[0] if allowed_users else None
 
-        reasoning = source.get("REASONING_EFFORT", "medium").strip().lower()
+        reasoning = source.get("REASONING_EFFORT", "high").strip().lower()
         if reasoning not in {"low", "medium", "high"}:
             raise ConfigurationError("REASONING_EFFORT must be low, medium, or high")
 
@@ -126,7 +126,7 @@ class Settings:
             omp_base_url=base_url,
             omp_api_key=source.get("OMP_API_KEY", "").strip(),
             default_model=normalize_model_name(
-                source.get("DEFAULT_MODEL", "google-antigravity/gemini-3.7-flash")
+                source.get("DEFAULT_MODEL", "google-antigravity/gemini-3.8-flash")
             ),
             reasoning_effort=reasoning,
             max_output_tokens=_parse_int(
