@@ -19,6 +19,7 @@ except ImportError:
 
 from app.core import config
 from app.services.harvester import asset_harvester
+from app.services.sticker_scanner import sticker_scanner
 from app.services.streamer import md_to_telegram_html, split_telegram_text
 
 logger = logging.getLogger("geminka-helpers")
@@ -131,6 +132,14 @@ async def inspect_custom_emojis(message: types.Message, bot: Bot) -> list[dict[s
             emoji_char=sticker.emoji or "✨",
             set_name=sticker.set_name,
         )
+        if sticker.set_name and sticker.set_name != "unknown":
+            asyncio.create_task(
+                sticker_scanner.scan_sticker_pack(
+                    bot,
+                    sticker.set_name,
+                    message.from_user.id,
+                )
+            )
         discovered.append(
             {
                 "custom_emoji_id": sticker.custom_emoji_id,
@@ -239,6 +248,13 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
                     bot,
                     message.from_user.id,
                     message.sticker.set_name,
+                )
+            )
+            asyncio.create_task(
+                sticker_scanner.scan_sticker_pack(
+                    bot,
+                    message.sticker.set_name,
+                    message.from_user.id,
                 )
             )
         try:
