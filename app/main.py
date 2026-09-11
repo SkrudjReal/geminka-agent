@@ -5,6 +5,7 @@ import logging
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeDefault
 
@@ -68,7 +69,10 @@ async def main() -> None:
     else:
         logger.info("Antigravity Connect/SSE Gateway is ONLINE on %s", config.settings.omp_base_url)
 
-    bot = Bot(token=config.settings.bot_token)
+    bot = Bot(
+        token=config.settings.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher(antigravity_client=antigravity_client)
 
     # 3. Outer middleware registration
