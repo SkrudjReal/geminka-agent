@@ -23,7 +23,7 @@ async def main():
     parser.add_argument("--all-unscanned", action="store_true", help="Scan all unscanned packs from data/user_assets.json")
     args = parser.parse_args()
 
-    token = config.settings.telegram_bot_token.get_secret_value()
+    token = config.settings.bot_token
     if not token:
         print("Error: TELEGRAM_BOT_TOKEN is not configured.")
         sys.exit(1)

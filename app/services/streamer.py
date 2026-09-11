@@ -48,6 +48,7 @@ REACT_TAG_RE = re.compile(r"<tg-react\s+([^>]+)\s*/?>", re.IGNORECASE)
 REPLY_TAG_RE = re.compile(r"<tg-reply(?:\s*/>|\s+[^>]*/>)", re.IGNORECASE)
 RP_TAG_RE = re.compile(r"<tg-rp\s+([^>]+)\s*/?>", re.IGNORECASE)
 PHOTO_PAIR_TAG_RE = re.compile(r"<tg-send-photos\s*/?>|<tg-photo-pair\s*/?>", re.IGNORECASE)
+CUSTOM_PHOTO_TAG_RE = re.compile(r"<tg-photo\s+([^>]+)\s*/?>", re.IGNORECASE)
 
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$")
 
@@ -424,7 +425,7 @@ INCOMPLETE_CONTROL_TAG_RE = re.compile(
 
 def strip_delivery_tags(text: str) -> str:
     """Remove model control tags and incomplete/half-typed control tags from Telegram-visible text."""
-    for pattern in (STICKER_TAG_RE, REACT_TAG_RE, REPLY_TAG_RE, RP_TAG_RE, PHOTO_PAIR_TAG_RE):
+    for pattern in (STICKER_TAG_RE, REACT_TAG_RE, REPLY_TAG_RE, RP_TAG_RE, PHOTO_PAIR_TAG_RE, CUSTOM_PHOTO_TAG_RE):
         text = pattern.sub("", text)
     text = INCOMPLETE_CONTROL_TAG_RE.sub("", text)
     return text.strip()
@@ -709,6 +710,30 @@ class TelegramStreamConsumer:
                         )
                 except Exception as e:
                     logger.warning(f"Failed to send photo pair: {e}")
+
+        # Send custom photo(s) if <tg-photo path="..." caption="..."/> is present
+        for m_photo in CUSTOM_PHOTO_TAG_RE.finditer(final_raw):
+            p_attrs = m_photo.group(1)
+            m_path = re.search(r'path="([^"]+)"', p_attrs)
+            if m_path:
+                raw_path_str = m_path.group(1).strip()
+                p_file = Path(raw_path_str)
+                if not p_file.is_absolute():
+                    p_file = config.BASE_DIR / p_file
+                if p_file.exists():
+                    m_cap = re.search(r'caption="([^"]+)"', p_attrs)
+                    caption_val = m_cap.group(1).strip() if m_cap else None
+                    html_cap = md_to_telegram_html(caption_val) if caption_val else None
+                    try:
+                        await self.bot.send_photo(
+                            chat_id=self.chat_id,
+                            photo=FSInputFile(str(p_file)),
+                            caption=html_cap,
+                            parse_mode=ParseMode.HTML if html_cap else None,
+                            message_thread_id=self.message_thread_id,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send custom photo {p_file}: {e}")
 
         # Send native Telegram sticker
         if sticker_file_id:
