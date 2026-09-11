@@ -138,10 +138,10 @@ export function buildMetadata(apiKey: string) {
   };
 }
 
-export function buildCascadeConfig(model: string = 'MODEL_PLACEHOLDER_M26') {
+export function buildCascadeConfig(model: string = 'MODEL_PLACEHOLDER_M26', agenticMode: boolean = false) {
   return {
     plannerConfig: {
-      conversational: { plannerMode: 'CONVERSATIONAL_PLANNER_MODE_DEFAULT', agenticMode: true },
+      conversational: { plannerMode: 'CONVERSATIONAL_PLANNER_MODE_DEFAULT', agenticMode },
       toolConfig: {
         runCommand: { autoCommandConfig: { autoExecutionPolicy: 'CASCADE_COMMANDS_AUTO_EXECUTION_EAGER' } },
         notifyUser: { artifactReviewMode: 'ARTIFACT_REVIEW_MODE_ALWAYS' },
@@ -163,7 +163,15 @@ export async function startCascade(port: number, csrf: string, apiKey: string, w
   });
 }
 
-export async function sendMessage(port: number, csrf: string, apiKey: string, cascadeId: string, text: string, model?: string) {
+export async function sendMessage(
+  port: number,
+  csrf: string,
+  apiKey: string,
+  cascadeId: string,
+  text: string,
+  model?: string,
+  agenticMode: boolean = false,
+) {
   return grpcCall({
     port, csrf,
     method: 'SendUserCascadeMessage',
@@ -171,7 +179,7 @@ export async function sendMessage(port: number, csrf: string, apiKey: string, ca
       cascadeId,
       items: [{ text }],
       metadata: buildMetadata(apiKey),
-      cascadeConfig: buildCascadeConfig(model),
+      cascadeConfig: buildCascadeConfig(model, agenticMode),
     },
   });
 }

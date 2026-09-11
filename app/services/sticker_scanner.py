@@ -219,11 +219,11 @@ class StickerPackScanner:
 Стикеры на этом листе: {items_desc}.
 
 Твоя задача:
-1. Описать КАЖДЫЙ стикер по его номеру:
-   - Кто персонаж / мем / объект
-   - Какая эмоция, действие, поза или надпись на стикере
-   - Короткое и точное описание (1 предложение)
-   - 3-5 ключевых тегов (персонаж, эмоция, контекст)
+1. Описать КАЖДЫЙ стикер по его номеру по СТРОГОМУ ПРАВИЛУ:
+   - КРИТИЧЕСКОЕ ПРАВИЛО: Если на стикере есть ЛЮБОЙ читаемый текст или надпись, поле "description" ОБЯЗАНО начинаться В ПЕРВУЮ ОЧЕРЕДЬ именно с этого текста в кавычках (например: «КУДА ПРЕДОПЛАТУ ПЕРЕВОДИТЬ?» или «ТАК И ЗАПИШЕМ»), после чего через тире идёт краткое пояснение персонажа, позы или эмоции.
+   - Если текста на стикере нет, то описать персонажа, эмоцию и действие.
+   - ДЛИНА ОПИСАНИЯ: строго ёмко и компактно — ДО 120 СИМВОЛОВ на каждый стикер!
+   - 3-5 ключевых тегов (персонаж, слова из текста, эмоция, тема).
 
 {pack_summary_prompt}
 
@@ -233,8 +233,8 @@ class StickerPackScanner:
   "stickers": [
     {{
       "index": {first_idx},
-      "character": "Имя персонажа или суть объекта",
-      "description": "Краткое точное описание происходящего на стикере",
+      "text_on_sticker": "Точный текст на стикере если есть, иначе пусто",
+      "description": "«ТЕКСТ СО СТИКЕРА» — краткое пояснение персонажа и действия до 120 символов",
       "tags": ["тег1", "тег2", "тег3"]
     }}
   ]
@@ -430,14 +430,28 @@ class StickerPackScanner:
 
                 for idx, png_path, emoji_char, sticker_obj in batch:
                     item_scan = parsed_by_index.get(idx, {})
-                    char_name = item_scan.get("character") or ""
-                    desc = item_scan.get("description") or ""
-                    if char_name and desc:
-                        full_desc = f"{char_name}: {desc}"
-                    else:
-                        full_desc = desc or char_name or f"Стикер {emoji_char}"
+                    text_on_stk = (item_scan.get("text_on_sticker") or "").strip()
+                    desc = (item_scan.get("description") or "").strip()
+                    char_name = (item_scan.get("character") or "").strip()
+
+                    if not desc:
+                        desc = char_name or f"Стикер {emoji_char}"
+
+                    # If text was recognized on sticker and not yet in description prefix, prepend it
+                    if text_on_stk and not desc.startswith("«") and not desc.startswith('"'):
+                        if text_on_stk.lower() not in desc.lower():
+                            desc = f"«{text_on_stk}» — {desc}"
+
+                    # Enforce strict 120 character limit
+                    if len(desc) > 120:
+                        desc = desc[:117].rstrip() + "…"
 
                     tags = item_scan.get("tags") or []
+                    if text_on_stk:
+                        for word in re.findall(r"\w+", text_on_stk.lower()):
+                            if len(word) > 2 and word not in tags:
+                                tags.append(word)
+
                     if emoji_char and emoji_char not in tags:
                         tags.append(emoji_char)
 
@@ -445,7 +459,7 @@ class StickerPackScanner:
                         "file_id": sticker_obj.file_id,
                         "file_unique_id": sticker_obj.file_unique_id,
                         "emoji": emoji_char,
-                        "description": full_desc,
+                        "description": desc,
                         "tags": tags,
                         "grid_index": idx,
                     })
