@@ -326,8 +326,10 @@ class AssetHarvester:
                 if any(t_low in str(x).lower() for x in s.get("tags", [])) or t_low in s.get("set_name", "").lower()
             ]
 
-        # Priority 5: Fallback to all user stickers
+        # Priority 5: Fallback to all user stickers only if no specific criteria were requested
         if not candidates:
+            if tag or emoji or pack:
+                return None
             candidates = stickers
 
         recent_history = self.get_recent_sent_stickers(user_id, limit=20)
