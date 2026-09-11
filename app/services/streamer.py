@@ -252,7 +252,7 @@ def md_to_telegram_html(md: str) -> str:
         return f"%%TGHTMLTAG_{idx}%%"
 
     valid_tag_pattern = re.compile(
-        r"</?(?:b|strong|i|em|u|ins|s|strike|del|tg-spoiler|blockquote|code|pre)\b[^>]*>|"
+        r"</?(?:b|strong|i|em|u|ins|s|strike|del|tg-spoiler|blockquote|code|pre|span|tg-time)\b[^>]*>|"
         r'<a\s+href="[^"]+"[^>]*>|</a>',
         re.IGNORECASE,
     )

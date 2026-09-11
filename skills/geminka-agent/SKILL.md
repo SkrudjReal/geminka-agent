@@ -135,6 +135,43 @@ Geminka output supports specialized tags parsed automatically by `TelegramStream
    - Delivers photo 1 (`assets/columbina_with_kuukhenki.jpg`) + photo 2 (`assets/columbina_secret.jpg`) in spoiler reply.
 5. **Interactive RP Actions (`<tg-rp action="..." banner="..."/>`):**
    - Detected triggers: `погладить`, `обнять`, `поцеловать`, `потискать`, `кусь`, `лизнуть`, `чай`, `кофе`, etc.
+6. **Telegram Supported HTML Tags Reference:**
+   Строго используй только следующие поддерживаемые HTML-теги и структуры для форматирования в Telegram:
+   - **Жирный:** `<b>bold</b>`, `<strong>bold</strong>`
+   - **Курсив:** `<i>italic</i>`, `<em>italic</em>`
+   - **Подчёркнутый:** `<u>underline</u>`, `<ins>underline</ins>`
+   - **Зачёркнутый:** `<s>strikethrough</s>`, `<strike>strikethrough</strike>`, `<del>strikethrough</del>`
+   - **Спойлер:** `<tg-spoiler>spoiler</tg-spoiler>`, `<span class="tg-spoiler">spoiler</span>`
+   - **Комбинированная вложенность:** `<b>bold <i>italic bold <s>italic bold strikethrough <span class="tg-spoiler">italic bold strikethrough spoiler</span></s> <u>underline italic bold</u></i> bold</b>`
+   - **Ссылки и упоминания пользователей:**
+     - `<a href="http://www.example.com/">inline URL</a>`
+     - `<a href="tg://user?id=123456789">inline mention of a user</a>`
+   - **Кастомные премиум-эмодзи:** `<tg-emoji emoji-id="5368324170671202286">👍</tg-emoji>`
+   - **Временные метки (native timestamps):**
+     - `<tg-time unix="1647531900" format="wDT">22:45 tomorrow</tg-time>`
+     - `<tg-time unix="1647531900" format="t">22:45 tomorrow</tg-time>`
+     - `<tg-time unix="1647531900" format="r">22:45 tomorrow</tg-time>`
+     - `<tg-time unix="1647531900">22:45 tomorrow</tg-time>`
+   - **Код:**
+     - Однострочный (inline): `<code>inline fixed-width code</code>`
+     - Блок кода: `<pre>pre-formatted fixed-width code block</pre>`
+     - Блок с подсветкой синтаксиса: `<pre><code class="language-python">pre-formatted fixed-width code block written in the Python programming language</code></pre>`
+   - **Цитаты (Blockquotes):**
+     - Обычная цитата:
+       ```html
+       <blockquote>Block quotation started
+       Block quotation continued
+       The last line of the block quotation</blockquote>
+       ```
+     - Раскрывающаяся цитата (expandable):
+       ```html
+       <blockquote expandable>Expandable block quotation started
+       Expandable block quotation continued
+       Expandable block quotation continued
+       Hidden by default part of the block quotation started
+       Expandable block quotation continued
+       The last line of the block quotation</blockquote>
+       ```
 
 ---
 
