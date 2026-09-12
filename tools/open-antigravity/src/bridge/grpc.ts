@@ -61,7 +61,11 @@ export function grpcCall(opts: GrpcCallOptions): Promise<any> {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
+        if ((res.statusCode || 500) >= 400) {
+          reject(new Error(`Antigravity ${opts.method}: HTTP ${res.statusCode}: ${data.slice(0, 500)}`));
+          return;
+        }
+        try { const parsed = JSON.parse(data); if (parsed.error || parsed.code) reject(new Error(JSON.stringify(parsed))); else resolve(parsed); }
         catch { resolve(data); }
       });
     });

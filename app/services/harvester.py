@@ -59,6 +59,7 @@ def extract_stems(text: str) -> List[str]:
 class AssetHarvester:
     def __init__(self, storage_file: Path = USER_ASSETS_FILE):
         self.storage_file = storage_file
+        self._storage_mtime_ns: int | None = None
         self.data: Dict[str, Any] = {
             "custom_emojis": {},  # custom_emoji_id -> {id, emoji, set_name, count, last_used, users: []}
             "stickers": {},        # file_id -> {file_id, emoji, set_name, count, last_used, tags: [], users: []}
@@ -79,6 +80,7 @@ class AssetHarvester:
                 for k in ["custom_emojis", "stickers", "sticker_packs", "user_preferences", "recent_sent_stickers"]:
                     if k in saved:
                         self.data[k] = saved[k]
+                self._storage_mtime_ns = self.storage_file.stat().st_mtime_ns
                 logger.info(
                     f"AssetHarvester loaded {len(self.data['custom_emojis'])} custom emojis, "
                     f"{len(self.data['stickers'])} stickers, {len(self.data['sticker_packs'])} packs."
@@ -89,8 +91,18 @@ class AssetHarvester:
     def save(self) -> None:
         try:
             atomic_write_json(self.storage_file, self.data)
+            self._storage_mtime_ns = self.storage_file.stat().st_mtime_ns
         except Exception as e:
             logger.warning(f"Failed to save user assets: {e}")
+
+    def _refresh_if_changed(self) -> None:
+        """Reload JSON written by the background sticker scanner before reads."""
+        try:
+            mtime_ns = self.storage_file.stat().st_mtime_ns
+        except OSError:
+            return
+        if mtime_ns != self._storage_mtime_ns:
+            self.load()
 
     def register_custom_emoji(
         self,
@@ -100,6 +112,7 @@ class AssetHarvester:
         set_name: Optional[str] = None,
     ) -> None:
         """Records a custom emoji sent by user."""
+        self._refresh_if_changed()
         if self._debug_mode(user_id):
             return
         cid = str(custom_emoji_id).strip()
@@ -150,6 +163,7 @@ class AssetHarvester:
         meta: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Records a sticker sent by user, preserving unique IDs and rich descriptions."""
+        self._refresh_if_changed()
         if self._debug_mode(user_id):
             return
         emoji_val = emoji_char or emoji or "🌸"
@@ -233,6 +247,7 @@ class AssetHarvester:
 
     def get_user_custom_emojis(self, user_id: int, limit: int = 15) -> List[Dict[str, Any]]:
         """Returns the most active custom emojis for the user (or global ones)."""
+        self._refresh_if_changed()
         uid_str = str(user_id)
         user_emojis = []
         for item in self.data["custom_emojis"].values():
@@ -245,6 +260,7 @@ class AssetHarvester:
 
     def get_user_stickers(self, user_id: int) -> List[Dict[str, Any]]:
         """Returns all collected stickers sent by the user, sorted by recency and count."""
+        self._refresh_if_changed()
         uid_str = str(user_id)
         u_stickers = []
         for item in self.data["stickers"].values():
@@ -261,6 +277,7 @@ class AssetHarvester:
         set_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Retrieves stored metadata (description, tags, etc.) for a sticker by file_id, file_unique_id, and/or set_name."""
+        self._refresh_if_changed()
         # 1. First priority: search by permanent file_unique_id with description in user_assets
         if file_unique_id:
             for item in self.data.get("stickers", {}).values():
@@ -306,6 +323,7 @@ class AssetHarvester:
 
     def is_pack_fully_scanned(self, set_name: str) -> bool:
         """Checks if a sticker pack is already ingested and has vision scan descriptions."""
+        self._refresh_if_changed()
         if not set_name or set_name == "unknown":
             return False
         p_info = self.data.get("sticker_packs", {}).get(set_name, {})
@@ -373,6 +391,7 @@ class AssetHarvester:
 
     def record_sent_sticker(self, user_id: int, file_id: str) -> None:
         """Records a sticker sent by the bot for recency and frequency penalty tracking."""
+        self._refresh_if_changed()
         if self._debug_mode(user_id):
             return
         uid_str = str(user_id)

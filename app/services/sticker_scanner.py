@@ -50,11 +50,21 @@ class StickerPackScanner:
         self.grids_dir = cache_dir / "grids"
         self.grids_dir.mkdir(parents=True, exist_ok=True)
         self._pack_locks: Dict[str, asyncio.Lock] = {}
+        self._scheduled_scans: Dict[str, asyncio.Task] = {}
 
     def _get_lock(self, set_name: str) -> asyncio.Lock:
         if set_name not in self._pack_locks:
             self._pack_locks[set_name] = asyncio.Lock()
         return self._pack_locks[set_name]
+
+    def schedule_scan(self, bot: Any, set_name: str, user_id: Optional[int] = None) -> None:
+        """Schedule one background scan per pack without blocking the message handler."""
+        task = self._scheduled_scans.get(set_name)
+        if task is not None and not task.done():
+            return
+        self._scheduled_scans[set_name] = asyncio.create_task(
+            self.scan_sticker_pack(bot, set_name, user_id=user_id)
+        )
 
     def _load_font(self, size: int = 20) -> ImageFont.ImageFont:
         font_candidates = [
@@ -94,9 +104,15 @@ class StickerPackScanner:
             await bot.download_file(file_obj.file_path, raw_path)
 
             if is_video or raw_ext == ".webm":
-                # Extract first frame via ffmpeg
+                probe = await asyncio.create_subprocess_exec(
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(raw_path),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                )
+                duration, _ = await asyncio.wait_for(probe.communicate(), 15)
+                midpoint = float(duration.strip()) / 2
                 cmd = [
-                    "ffmpeg", "-y", "-i", str(raw_path),
+                    "ffmpeg", "-y", "-i", str(raw_path), "-ss", str(midpoint),
                     "-vframes", "1", str(png_path)
                 ]
                 proc = await asyncio.create_subprocess_exec(
@@ -104,7 +120,7 @@ class StickerPackScanner:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                await proc.wait()
+                await asyncio.wait_for(proc.wait(), 30)
                 if png_path.exists() and png_path.stat().st_size > 0:
                     return png_path
             elif not is_animated:
@@ -113,13 +129,16 @@ class StickerPackScanner:
                     img.convert("RGBA").save(png_path, "PNG")
                 return png_path
             else:
-                # TGS format: check if thumbnail exists
-                thumb = getattr(sticker, "thumbnail", None)
-                if thumb and getattr(thumb, "file_id", None):
-                    thumb_obj = await bot.get_file(thumb.file_id)
-                    if thumb_obj.file_path:
-                        await bot.download_file(thumb_obj.file_path, png_path)
-                        return png_path
+                from lottie.exporters.cairo import export_png
+                from lottie.parsers.tgs import parse_tgs
+
+                def render_tgs():
+                    animation = parse_tgs(str(raw_path))
+                    export_png(animation, str(png_path),
+                               frame=int((animation.in_point + animation.out_point) / 2))
+
+                await asyncio.to_thread(render_tgs)
+                return png_path
         except Exception as e:
             logger.warning(f"Error downloading/converting sticker {unique_id}: {e}")
 
@@ -219,10 +238,13 @@ class StickerPackScanner:
 Стикеры на этом листе: {items_desc}.
 
 Твоя задача:
+Открой указанное изображение инструментом просмотра изображения; анализируй именно пиксели сетки.
+Это запрос только на чтение: не изменяй файлы, JSON-каталоги, код или настройки и не запускай скрипты.
+Верни результат только в ответе; запись каталога выполнит вызывающий Python-сервис.
 1. Описать КАЖДЫЙ стикер по его номеру по СТРОГОМУ ПРАВИЛУ:
    - КРИТИЧЕСКОЕ ПРАВИЛО: Если на стикере есть ЛЮБОЙ читаемый текст или надпись, поле "description" ОБЯЗАНО начинаться В ПЕРВУЮ ОЧЕРЕДЬ именно с этого текста в кавычках (например: «КУДА ПРЕДОПЛАТУ ПЕРЕВОДИТЬ?» или «ТАК И ЗАПИШЕМ»), после чего через тире идёт краткое пояснение персонажа, позы или эмоции.
    - Если текста на стикере нет, то описать персонажа, эмоцию и действие.
-   - ДЛИНА ОПИСАНИЯ: строго ёмко и компактно — ДО 120 СИМВОЛОВ на каждый стикер!
+   - ДЛИНА ОПИСАНИЯ: одно содержательное предложение до 120 слов; опиши видимые детали, не выдумывай невидимое.
    - 3-5 ключевых тегов (персонаж, слова из текста, эмоция, тема).
 
 {pack_summary_prompt}
@@ -234,7 +256,7 @@ class StickerPackScanner:
     {{
       "index": {first_idx},
       "text_on_sticker": "Точный текст на стикере если есть, иначе пусто",
-      "description": "«ТЕКСТ СО СТИКЕРА» — краткое пояснение персонажа и действия до 120 символов",
+      "description": "«ТЕКСТ СО СТИКЕРА» — описание персонажа, внешности, действия и эмоции одним предложением до 120 слов",
       "tags": ["тег1", "тег2", "тег3"]
     }}
   ]
@@ -242,18 +264,20 @@ class StickerPackScanner:
 """
         # Call OMP Gateway
         base_url = config.settings.omp_base_url.rstrip("/")
-        url = f"{base_url}/chat/completions" if not base_url.endswith("/v1") else f"{base_url}/chat/completions"
+        url = base_url + ("/chat/completions" if base_url.endswith("/v1") else "/v1/chat/completions")
 
         payload = {
             "model": config.settings.default_model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
-            "max_tokens": 4096,
+            "reasoning_effort": "medium",
+            "max_tokens": 12000,
         }
 
         timeout = httpx.Timeout(360.0, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json=payload)
+            headers = {"Authorization": f"Bearer {config.settings.omp_api_key}"} if config.settings.omp_api_key else {}
+            resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:
                 raise RuntimeError(f"OMP Vision HTTP {resp.status_code}: {resp.text[:300]}")
             data = resp.json()
@@ -268,15 +292,18 @@ class StickerPackScanner:
 
         try:
             parsed = json.loads(cleaned)
+            if is_first_sheet and not str(parsed.get("pack_summary", "")).strip():
+                raise ValueError("Vision returned no pack summary")
+            expected = {idx for idx, _ in items_on_sheet}
+            records = parsed.get("stickers", [])
+            if {item.get("index") for item in records} != expected or len(records) != len(expected):
+                raise ValueError("Vision returned missing or duplicate sticker indices")
+            if any(not isinstance(item.get("description"), str) or not item["description"].strip() for item in records):
+                raise ValueError("Vision returned empty descriptions")
             return parsed
         except Exception as err:
             logger.warning(f"Failed to parse vision JSON for {grid_path.name}: {err}\nRaw:\n{cleaned[:300]}")
-            # Fallback regex extraction of pack_summary if JSON was slightly malformed
-            summary_match = re.search(r'"pack_summary"\s*:\s*"([^"]+)"', cleaned)
-            return {
-                "pack_summary": summary_match.group(1) if summary_match else "",
-                "stickers": [],
-            }
+            raise ValueError("Incomplete or invalid vision result") from err
 
     def save_scan_results(
         self,
@@ -286,6 +313,7 @@ class StickerPackScanner:
         pack_summary: str,
         grid_paths: List[Path],
         user_id: Optional[int] = None,
+        complete: bool = True,
     ) -> None:
         """Atomically persists scan descriptions and pack summary to user_assets.json and bot_stickers.json."""
         if user_id is not None and state_store.is_debug_mode(user_id):
@@ -300,9 +328,9 @@ class StickerPackScanner:
         p_info["set_name"] = set_name
         p_info["title"] = set_title or p_info.get("title", set_name)
         p_info["sticker_count"] = len(stickers_metadata)
-        p_info["scanned"] = True
+        p_info["scanned"] = complete
         p_info["scanned_at"] = now
-        p_info["fully_synced"] = True
+        p_info["fully_synced"] = complete
         p_info["last_sync"] = now
         p_info["grid_images"] = [str(p.resolve()) for p in grid_paths]
         if pack_summary:
@@ -319,6 +347,10 @@ class StickerPackScanner:
             entry["file_unique_id"] = sm.get("file_unique_id", "")
             entry["emoji"] = sm.get("emoji", "✨")
             entry["set_name"] = set_name
+            if user_id is not None:
+                users = entry.setdefault("users", [])
+                if str(user_id) not in users:
+                    users.append(str(user_id))
             if sm.get("description"):
                 entry["description"] = sm["description"]
             if sm.get("tags"):
@@ -332,32 +364,49 @@ class StickerPackScanner:
         logger.info(f"Updated user_assets.json for pack '{set_name}' ({len(stickers_metadata)} stickers).")
 
         # 2. Update bot_stickers.json if it exists and contains items from this pack
-        if self.bot_stickers_file.exists():
-            try:
-                bot_stickers = load_json(self.bot_stickers_file, [])
-                if isinstance(bot_stickers, list):
-                    modified = False
-                    meta_by_unique = {sm["file_unique_id"]: sm for sm in stickers_metadata if sm.get("file_unique_id")}
-                    meta_by_fid = {sm["file_id"]: sm for sm in stickers_metadata if sm.get("file_id")}
+        try:
+            bot_stickers = load_json(self.bot_stickers_file, [])
+            if isinstance(bot_stickers, list):
+                modified = False
+                meta_by_unique = {sm["file_unique_id"]: sm for sm in stickers_metadata if sm.get("file_unique_id")}
+                meta_by_fid = {sm["file_id"]: sm for sm in stickers_metadata if sm.get("file_id")}
+                matched_ids = set()
 
-                    for bs in bot_stickers:
-                        fuid = bs.get("file_unique_id")
-                        fid = bs.get("file_id")
-                        match = meta_by_unique.get(fuid) or meta_by_fid.get(fid)
-                        if match:
-                            if match.get("description"):
-                                bs["description"] = match["description"]
-                            if match.get("tags"):
-                                existing_tags = set(bs.get("tags", []))
-                                existing_tags.update(match["tags"])
-                                bs["tags"] = sorted(list(existing_tags))
-                            modified = True
+                for bs in bot_stickers:
+                    fuid = bs.get("file_unique_id")
+                    fid = bs.get("file_id")
+                    match = meta_by_unique.get(fuid) or meta_by_fid.get(fid)
+                    if match:
+                        matched_ids.add(match.get("file_id"))
+                        if match.get("description"):
+                            bs["description"] = match["description"]
+                        if match.get("tags"):
+                            existing_tags = set(bs.get("tags", []))
+                            existing_tags.update(match["tags"])
+                            bs["tags"] = sorted(list(existing_tags))
+                        modified = True
 
-                    if modified:
-                        atomic_write_json(self.bot_stickers_file, bot_stickers)
-                        logger.info("Updated bot_stickers.json with enriched scan descriptions.")
-            except Exception as e:
-                logger.warning(f"Failed to update bot_stickers.json: {e}")
+                for sm in stickers_metadata:
+                    if sm.get("file_id") in matched_ids:
+                        continue
+                    bot_stickers.append(
+                        {
+                            "index": len(bot_stickers),
+                            "file_id": sm.get("file_id"),
+                            "file_unique_id": sm.get("file_unique_id", ""),
+                            "emoji": sm.get("emoji", "✨"),
+                            "set_name": set_name,
+                            "description": sm.get("description", ""),
+                            "tags": sm.get("tags", []),
+                        }
+                    )
+                    modified = True
+
+                if modified:
+                    atomic_write_json(self.bot_stickers_file, bot_stickers)
+                    logger.info("Updated bot_stickers.json with enriched scan descriptions.")
+        except Exception as e:
+            logger.warning(f"Failed to update bot_stickers.json: {e}")
 
     async def scan_sticker_pack(
         self,
@@ -378,7 +427,7 @@ class StickerPackScanner:
             if user_id is not None and state_store.is_debug_mode(user_id):
                 return False
             p_info = user_assets.get("sticker_packs", {}).get(set_name, {})
-            if not force and p_info.get("scanned") and p_info.get("summary"):
+            if not force and p_info.get("scanned") and p_info.get("fully_synced") and p_info.get("summary"):
                 logger.debug(f"Pack '{set_name}' is already scanned. Skipping.")
                 return True
 
@@ -400,10 +449,19 @@ class StickerPackScanner:
 
             # 1. Download & convert all stickers to PNG frames
             items_to_render: List[Tuple[int, Path, str, Any]] = []
-            for idx, s in enumerate(stickers, start=1):
+            download_slots = asyncio.Semaphore(4)
+
+            async def download(s):
+                async with download_slots:
+                    return await self.download_sticker_frame(bot, s)
+
+            frames = await asyncio.gather(*(download(s) for s in stickers))
+            for idx, (s, png_path) in enumerate(zip(stickers, frames, strict=True), start=1):
                 if user_id is not None and state_store.is_debug_mode(user_id):
                     return False
-                png_path = await self.download_sticker_frame(bot, s)
+                if png_path is None:
+                    logger.error("Pack %s: frame #%d failed; keeping pack incomplete", set_name, idx)
+                    return False
                 emoji_char = s.emoji or "✨"
                 items_to_render.append((idx, png_path, emoji_char, s))
 
@@ -425,17 +483,23 @@ class StickerPackScanner:
 
                 # 3. Vision scanning with resilience
                 items_on_sheet = [(idx, em) for (idx, _, em, _) in batch]
-                try:
-                    scan_res = await self.scan_grid_with_vision(
-                        grid_path=grid_path,
-                        items_on_sheet=items_on_sheet,
-                        set_title=set_title,
-                        set_name=set_name,
-                        is_first_sheet=(sheet_idx == 1),
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to scan sheet {sheet_idx} of pack '{set_name}': {e}")
-                    scan_res = {}
+                scan_res = {}
+                for attempt in range(3):
+                    try:
+                        scan_res = await self.scan_grid_with_vision(
+                            grid_path=grid_path,
+                            items_on_sheet=items_on_sheet,
+                            set_title=set_title,
+                            set_name=set_name,
+                            is_first_sheet=(sheet_idx == 1),
+                        )
+                        break
+                    except Exception as e:
+                        logger.warning("Pack %s sheet %d attempt %d: %s", set_name, sheet_idx, attempt + 1, e)
+                        if attempt < 2:
+                            await asyncio.sleep(2 ** attempt)
+                if not scan_res:
+                    continue
 
                 if sheet_idx == 1 and scan_res.get("pack_summary"):
                     overall_pack_summary = scan_res["pack_summary"].strip()
@@ -446,19 +510,14 @@ class StickerPackScanner:
                     item_scan = parsed_by_index.get(idx, {})
                     text_on_stk = (item_scan.get("text_on_sticker") or "").strip()
                     desc = (item_scan.get("description") or "").strip()
-                    char_name = (item_scan.get("character") or "").strip()
 
                     if not desc:
-                        desc = char_name or f"Стикер {emoji_char}"
+                        continue
 
                     # If text was recognized on sticker and not yet in description prefix, prepend it
                     if text_on_stk and not desc.startswith("«") and not desc.startswith('"'):
                         if text_on_stk.lower() not in desc.lower():
                             desc = f"«{text_on_stk}» — {desc}"
-
-                    # Enforce strict 120 character limit
-                    if len(desc) > 120:
-                        desc = desc[:117].rstrip() + "…"
 
                     tags = item_scan.get("tags") or []
                     if text_on_stk:
@@ -488,15 +547,11 @@ class StickerPackScanner:
                     pack_summary=overall_pack_summary,
                     grid_paths=grid_paths,
                     user_id=user_id,
+                    complete=False,
                 )
 
             # Fallback if pack_summary was missing
-            if not overall_pack_summary:
-                overall_pack_summary = (
-                    f"Коллекция стикеров «{set_title}» содержит {len(stickers)} выразительных фрагментов. "
-                    f"Набор выполнен в едином визуальном стиле и охватывает широкий спектр живых реакций, "
-                    f"эмоциональных акцентов и характерных жестов, идеально подходящих для оживлённой переписки."
-                )
+            complete = len(enriched_stickers) == len(stickers) and bool(overall_pack_summary)
 
             # 4. Atomically persist to JSON
             self.save_scan_results(
@@ -506,10 +561,11 @@ class StickerPackScanner:
                 pack_summary=overall_pack_summary,
                 grid_paths=grid_paths,
                 user_id=user_id,
+                complete=complete,
             )
 
-            logger.info(f"✅ Successfully scanned and enriched pack '{set_name}' with {len(enriched_stickers)} items.")
-            return True
+            logger.info("Pack %s: described %d/%d items, complete=%s", set_name, len(enriched_stickers), len(stickers), complete)
+            return complete
 
 
 sticker_scanner = StickerPackScanner()

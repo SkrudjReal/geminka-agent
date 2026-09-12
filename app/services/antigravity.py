@@ -193,8 +193,7 @@ class AntigravityClient:
                 if isinstance(data, dict) and "error" in data:
                     if _is_model_unavailable_error(data["error"]):
                         raise ModelUnavailable("Модель временно недоступна: нет свободной capacity.")
-                    logger.warning("OMP SSE error event: %s", raw[:500])
-                    continue
+                    raise GatewayError("Ошибка потока Antigravity: " + str(data["error"])[:500])
                 convo_id = data.get("_conversation_id")
                 choices = data.get("choices", [])
                 if not choices:

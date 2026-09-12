@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -136,12 +135,10 @@ async def inspect_custom_emojis(
                 set_name=sticker.set_name,
             )
         if persist and sticker.set_name and sticker.set_name != "unknown":
-            asyncio.create_task(
-                sticker_scanner.scan_sticker_pack(
-                    bot,
-                    sticker.set_name,
-                    message.from_user.id,
-                )
+            sticker_scanner.schedule_scan(
+                bot,
+                sticker.set_name,
+                message.from_user.id,
             )
         discovered.append(
             {
@@ -219,29 +216,25 @@ async def extract_message_context(
             fid = original.sticker.file_id
             uid = original.sticker.file_unique_id
             meta = asset_harvester.get_sticker_metadata(fid, uid, set_name=set_name)
-            local_png = config.STICKERS_CACHE_DIR / f"{uid}.png"
-            cache_str = f"; локальный файл в кэше: {local_png.resolve()}" if local_png.exists() else ""
+            if persist and set_name != "unknown" and not asset_harvester.is_pack_fully_scanned(set_name):
+                sticker_scanner.schedule_scan(bot, set_name, message.from_user.id)
 
             if meta and meta.get("description"):
                 desc_val = meta["description"]
                 tags_val = ", ".join(meta.get("tags", []))
                 parts.append(
-                    f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; описание: «{desc_val}»; теги: [{tags_val}]{cache_str}]"
+                    f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; описание: «{desc_val}»; теги: [{tags_val}]]"
+                )
+            elif meta:
+                parts.append(
+                    f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; "
+                    "стикер найден в JSON, но подробное описание ещё не готово]"
                 )
             else:
-                if persist:
-                    try:
-                        stk_path = await cache_sticker_file(bot, original.sticker)
-                        parts.append(
-                            f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; локальный файл в кэше: {stk_path}]"
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to cache quoted sticker: %s", exc)
-                        parts.append(f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}]")
-                else:
-                    parts.append(
-                        f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; файл не сохраняется в debug-режиме]"
-                    )
+                parts.append(
+                    f"[В цитате неизвестный стикер: {original.sticker.emoji}; пак: {set_name}; "
+                    "описание в JSON отсутствует]"
+                )
 
     if message.photo:
         if persist:
@@ -276,7 +269,8 @@ async def extract_message_context(
         # 1. СТРОГАЯ ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА: ищем стикер и пак в базе
         meta = asset_harvester.get_sticker_metadata(fid, uid, set_name=set_name)
         pack_scanned = asset_harvester.is_pack_fully_scanned(set_name) if set_name else False
-        pack_in_db = asset_harvester.is_pack_in_db(set_name) if set_name else False
+        if persist and set_name != "unknown" and not pack_scanned:
+            sticker_scanner.schedule_scan(bot, set_name, message.from_user.id)
 
         if persist:
             # Регистрируем использование в профиле пользователя (с сохранением уникального ID и описания)
@@ -291,49 +285,30 @@ async def extract_message_context(
                 meta=meta,
             )
 
-        local_png = config.STICKERS_CACHE_DIR / f"{uid}.png"
-        cache_str = f"; локальный файл в кэше: {local_png.resolve()}" if local_png.exists() else ""
-
         # 2. ЕСЛИ СТИКЕР УЖЕ ЕСТЬ В БАЗЕ С ОПИСАНИЕМ -> ПРОПУСКАЕМ ЭТАПЫ 2 И 3 ПОЛНОСТЬЮ!
         if meta and meta.get("description"):
             desc_val = meta["description"]
             tags_val = ", ".join(meta.get("tags", []))
             parts.append(
-                f"[Стикер: {stk.emoji}; пак: {set_name}; описание: «{desc_val}»; теги: [{tags_val}]{cache_str}]"
+                f"[Стикер: {stk.emoji}; пак: {set_name}; описание: «{desc_val}»; теги: [{tags_val}]]"
             )
         elif not persist:
             parts.append(
-                f"[Стикер: {stk.emoji}; пак: {set_name}; файл и профиль не сохраняются в debug-режиме]"
+                f"[Стикер: {stk.emoji}; пак: {set_name}; файл, профиль и сканирование отключены в debug-режиме]"
             )
         else:
-            # 3. ТОЛЬКО ЕСЛИ СТИКЕРА НЕТ В БАЗЕ -> скачиваем и при необходимости запускаем фоновое сканирование пака
+            # 3. Не блокируем ответ: весь пак сканируется в фоне, текущему запросу хватает метаданных Telegram.
             if set_name and set_name != "unknown" and not pack_scanned:
-                if not pack_in_db:
-                    asyncio.create_task(
-                        asset_harvester.ingest_full_sticker_pack(
-                            bot,
-                            message.from_user.id,
-                            set_name,
-                        )
-                    )
-                asyncio.create_task(
-                    sticker_scanner.scan_sticker_pack(
-                        bot,
-                        set_name,
-                        message.from_user.id,
-                    )
+                sticker_scanner.schedule_scan(
+                    bot,
+                    set_name,
+                    message.from_user.id,
                 )
 
-            try:
-                stk_path = await cache_sticker_file(bot, stk)
-                parts.append(
-                    f"[Стикер: {stk.emoji}; пак: {set_name}; локальный файл в кэше: {stk_path}]"
-                )
-            except Exception as exc:
-                logger.warning("Failed to cache sticker: %s", exc)
-                parts.append(
-                    f"[Стикер: {stk.emoji}; пак: {set_name}]"
-                )
+            parts.append(
+                f"[Стикер: {stk.emoji}; пак: {set_name}; описание отсутствует, "
+                "пак поставлен на фоновое сканирование]"
+            )
 
     if text := (message.text or message.caption or "").strip():
         parts.append(text)

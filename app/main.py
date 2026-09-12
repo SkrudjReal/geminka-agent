@@ -14,7 +14,6 @@ from app.bot.middlewares import OwnerAuthMiddleware
 from app.core import config
 from app.core.logger import setup_logging
 from app.services.antigravity import AntigravityClient
-from app.services.broadcaster import broadcast
 from app.services.omp_gateway import start_omp_gateway_task
 from app.services.palace_memory import palace_memory
 
@@ -93,12 +92,12 @@ async def main() -> None:
     dp.include_router(router)
 
     logger.info("Starting Geminka Telegram Bot (Antigravity Connect/SSE + Clean Architecture)...")
-    await bot.delete_webhook(drop_pending_updates=False)
+    await bot.delete_webhook(drop_pending_updates=True)
 
     # 5. Register command menu for all private chats
     await setup_bot_commands(bot)
 
-    # 6. Safe startup notification via dedicated broadcaster service
+    # 6. Optional startup notification via direct Telegram API call
     targets = set(config.settings.allowed_users)
 
     startup_text = (
@@ -109,12 +108,15 @@ async def main() -> None:
         '<tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
     )
     if config.settings.startup_notification and targets:
-        await broadcast(
-            bot=bot,
-            users=targets,
-            text=startup_text,
-            parse_mode=ParseMode.HTML,
-        )
+        for user_id in targets:
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=startup_text,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as exc:
+                logger.warning("Failed to send startup notification to %s: %s", user_id, exc)
 
     # 6. Start update polling
     for user_id in palace_memory.known_users():

@@ -10,7 +10,10 @@ build_omp_gateway() {
     local gateway_dir="$1"
     local gateway_dist="$2"
 
-    if [ -f "$gateway_dist" ] || [ ! -d "$gateway_dir" ]; then
+    if [ ! -d "$gateway_dir" ]; then
+        return 0
+    fi
+    if [ -f "$gateway_dist" ] && ! find "$gateway_dir/src" "$gateway_dir/package.json" "$gateway_dir/tsconfig.json" -type f -newer "$gateway_dist" -print -quit | read -r _; then
         return 0
     fi
     if ! command -v npm >/dev/null 2>&1; then

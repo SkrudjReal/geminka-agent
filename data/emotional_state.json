@@ -12,13 +12,13 @@
   },
   "1224362805": {
     "user_id": 1224362805,
-    "mood": "playful",
-    "energy": 99,
+    "mood": "affectionate",
+    "energy": 100,
     "affection": 100,
     "affinity": 200,
-    "warmth": 96,
-    "total_interactions": 259,
-    "last_interaction_ts": 1788979445.6382143,
+    "warmth": 100,
+    "total_interactions": 329,
+    "last_interaction_ts": 1789219932.0020747,
     "memories": []
   }
 }

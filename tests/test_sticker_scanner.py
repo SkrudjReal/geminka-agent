@@ -2,11 +2,51 @@
 
 import json
 from pathlib import Path
-from PIL import Image
+from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
+from app.services.harvester import AssetHarvester
 from app.services.sticker_scanner import StickerPackScanner
+
+
+async def test_failed_vision_does_not_invent_description(temp_scanner, monkeypatch):
+    scanner, assets, _, tmp = temp_scanner
+    frame = tmp / 'frame.png'
+    Image.new('RGBA', (20, 20)).save(frame)
+
+    async def download(*args):
+        return frame
+
+    async def vision(**kwargs):
+        raise ValueError('missing sticker descriptions')
+
+    async def get_set(name):
+        return SimpleNamespace(title=name, stickers=[SimpleNamespace(
+            file_id='missing', file_unique_id='unique', emoji='🌟')])
+
+    async def no_sleep(*args):
+        pass
+
+    monkeypatch.setattr(scanner, 'download_sticker_frame', download)
+    monkeypatch.setattr(scanner, 'scan_grid_with_vision', vision)
+    monkeypatch.setattr('app.services.sticker_scanner.asyncio.sleep', no_sleep)
+    assert not await scanner.scan_sticker_pack(SimpleNamespace(get_sticker_set=get_set), 'Failed')
+    data = json.loads(assets.read_text())
+    assert not data['sticker_packs']['Failed']['scanned']
+    assert 'missing' not in data['stickers']
+
+
+def test_harvester_write_preserves_scanner_descriptions(temp_scanner):
+    scanner, assets, _, _ = temp_scanner
+    harvester = AssetHarvester(assets)
+    scanner.save_scan_results('TestPack', 'Test', [{
+        'file_id':'test_fid_1', 'file_unique_id':'unique_1',
+        'description':'Description added in background', 'emoji':'🌸'
+    }], 'summary', [])
+    harvester.record_sent_sticker(1, 'test_fid_1')
+    assert json.loads(assets.read_text())['stickers']['test_fid_1']['description'] == 'Description added in background'
 
 
 @pytest.fixture
@@ -134,6 +174,7 @@ async def test_skip_already_scanned(temp_scanner):
         ua = json.load(f)
         ua["sticker_packs"]["AlreadyScanned"] = {
             "scanned": True,
+            "fully_synced": True,
             "summary": "Existing summary"
         }
         f.seek(0)
@@ -143,3 +184,74 @@ async def test_skip_already_scanned(temp_scanner):
     # Pass dummy bot
     res = await scanner.scan_sticker_pack(None, "AlreadyScanned", force=False)
     assert res is True
+
+
+def test_harvester_refreshes_json_written_by_scanner(tmp_path: Path):
+    assets_file = tmp_path / "user_assets.json"
+    bot_stickers_file = tmp_path / "bot_stickers.json"
+    assets_file.write_text(
+        json.dumps(
+            {
+                "stickers": {
+                    "fid": {
+                        "file_id": "fid",
+                        "file_unique_id": "uid",
+                        "emoji": "✨",
+                        "set_name": "Pack",
+                    }
+                },
+                "sticker_packs": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    harvester = AssetHarvester(assets_file)
+    scanner = StickerPackScanner(assets_file, bot_stickers_file, tmp_path / "cache")
+
+    scanner.save_scan_results(
+        set_name="Pack",
+        set_title="Pack",
+        stickers_metadata=[
+            {
+                "file_id": "fid",
+                "file_unique_id": "uid",
+                "emoji": "✨",
+                "description": "Персонаж смотрит с укором",
+                "tags": ["осуждение"],
+            }
+        ],
+        pack_summary="Pack summary",
+        grid_paths=[],
+    )
+
+    metadata = harvester.get_sticker_metadata("fid", "uid")
+    assert metadata is not None
+    assert metadata["description"] == "Персонаж смотрит с укором"
+
+
+def test_save_scan_results_populates_empty_bot_catalog(tmp_path: Path):
+    assets_file = tmp_path / "user_assets.json"
+    bot_stickers_file = tmp_path / "bot_stickers.json"
+    assets_file.write_text(json.dumps({"stickers": {}, "sticker_packs": {}}), encoding="utf-8")
+    bot_stickers_file.write_text("[]", encoding="utf-8")
+    scanner = StickerPackScanner(assets_file, bot_stickers_file, tmp_path / "cache")
+
+    scanner.save_scan_results(
+        set_name="Pack",
+        set_title="Pack",
+        stickers_metadata=[
+            {
+                "file_id": "fid",
+                "file_unique_id": "uid",
+                "emoji": "✨",
+                "description": "Новый стикер",
+                "tags": ["новый"],
+            }
+        ],
+        pack_summary="Pack summary",
+        grid_paths=[],
+    )
+
+    catalog = json.loads(bot_stickers_file.read_text(encoding="utf-8"))
+    assert catalog[0]["file_unique_id"] == "uid"
+    assert catalog[0]["description"] == "Новый стикер"

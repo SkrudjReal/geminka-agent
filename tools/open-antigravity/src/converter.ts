@@ -53,28 +53,6 @@ function extractSystemText(system: any): string | undefined {
 const DEBUG = !!process.env.DEBUG;
 function dbg(...args: any[]) { if (DEBUG) console.log('[DBG]', ...args); }
 
-/**
- * Extract the latest AI response text from a step list.
- * Tries several known Antigravity response field names.
- */
-function extractContent(steps: any[]): string {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (!step) continue;
-    const pr = step.plannerResponse;
-    if (pr) {
-      const text = pr.modifiedResponse || pr.response || pr.text || pr.content || '';
-      if (text) return text;
-    }
-    if (step.errorMessage) {
-      return typeof step.errorMessage === 'string' ? step.errorMessage : JSON.stringify(step.errorMessage);
-    }
-    // Some agentic steps embed the response directly
-    const text = step.response || step.text || step.content || '';
-    if (text && typeof text === 'string') return text;
-  }
-  return '';
-}
 
 export interface CompletionRequest {
   messages: Array<{ role: string; content: string }>;
@@ -193,10 +171,12 @@ export async function complete(req: CompletionRequest): Promise<CompletionResult
   }
 
   // Send the message
-  await grpc.sendMessage(conn.port, conn.csrf, conn.apiKey, cascadeId, promptText, internalModel);
-
-  // Wait for AI response via streaming (with auto-approval)
-  const content = await waitForResponse(conn.port, conn.csrf, conn.apiKey, cascadeId, internalModel, maxWait);
+  let content = '';
+  for await (const chunk of streamResponse(conn.port, conn.csrf, conn.apiKey, cascadeId, internalModel, maxWait,
+    () => grpc.sendMessage(conn.port, conn.csrf, conn.apiKey, cascadeId!, promptText, internalModel))) {
+    if (chunk.type === 'error') throw new Error(chunk.error);
+    if (chunk.type === 'content_delta') content += chunk.text || '';
+  }
 
   return {
     conversationId: cascadeId,
@@ -255,93 +235,15 @@ export async function* completeStream(req: CompletionRequest): AsyncGenerator<St
   yield { type: 'content_delta', text: '', conversationId: cascadeId };
 
   // Start streaming listener first to avoid race condition where fast responses complete before subscription
-  const streamGen = streamResponse(conn.port, conn.csrf, conn.apiKey, cascadeId, internalModel, maxWait);
+  const streamGen = streamResponse(conn.port, conn.csrf, conn.apiKey, cascadeId, internalModel, maxWait,
+    () => grpc.sendMessage(conn.port, conn.csrf, conn.apiKey, cascadeId!, promptText, internalModel));
 
   // Send the message concurrently
-  grpc.sendMessage(conn.port, conn.csrf, conn.apiKey, cascadeId, promptText, internalModel).catch(err => {
-    console.error('Error sending cascade message:', err);
-  });
 
   // Stream the response (with auto-approval)
   yield* streamGen;
 }
 
-/**
- * Wait for the AI response by subscribing to StreamAgentStateUpdates.
- * Auto-approves blocking NOTIFY_USER steps so the agent continues.
- * Returns the full response text when the agent goes idle.
- */
-function waitForResponse(port: number, csrf: string, apiKey: string, cascadeId: string, model: string, maxWaitMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let lastContent = '';
-    let updateCount = 0;
-    let autoApproving = false;
-    const approvedUris = new Set<string>();
-
-    const timeout = setTimeout(() => {
-      abort();
-      console.log(`⏱ waitForResponse timeout after ${maxWaitMs}ms — updates=${updateCount} lastContent=${lastContent.length}chars`);
-      resolve(lastContent || '[Timeout: AI did not respond in time]');
-    }, maxWaitMs);
-
-    const abort = grpc.streamAgentState(
-      port, csrf, cascadeId,
-      (update) => {
-        updateCount++;
-        const status = update?.status || '';
-        const stepsUpdate = update?.mainTrajectoryUpdate?.stepsUpdate;
-        const steps: any[] = stepsUpdate?.steps || [];
-
-        // Always log first update and status transitions
-        if (updateCount === 1 || status.includes('IDLE') || status.includes('ERROR')) {
-          const last = steps[steps.length - 1];
-          console.log(`📡 wait #${updateCount} cascadeId=${cascadeId.slice(0,8)} status=${status} steps=${steps.length} lastStepType=${last?.type || '-'} hasPR=${!!last?.plannerResponse}`);
-        }
-        dbg(`update#${updateCount} status=${status} steps=${steps.length}`);
-        if (DEBUG && steps.length) {
-          const last = steps[steps.length - 1];
-          dbg(`  last step type=${last?.type} hasPR=${!!last?.plannerResponse} keys=${Object.keys(last || {}).join(',')}`);
-        }
-
-        if (steps.length) {
-          const content = extractContent(steps);
-          if (content) lastContent = content;
-
-          if (!autoApproving) {
-            const blockingUri = getBlockingNotifyUri(steps);
-            if (blockingUri !== null) {
-              const approvalKey = `${steps.length}:${blockingUri}`;
-              if (!approvedUris.has(approvalKey)) {
-                autoApproving = true;
-                approvedUris.add(approvalKey);
-                console.log(`🤖 Auto-approving NOTIFY_USER (uri="${blockingUri || 'none'}")`);
-                grpc.proceedArtifact(port, csrf, apiKey, cascadeId, blockingUri, model)
-                  .then(() => { autoApproving = false; })
-                  .catch(() => { autoApproving = false; });
-              }
-            }
-          }
-        }
-
-        if (status === 'CASCADE_RUN_STATUS_IDLE' && lastContent && !autoApproving) {
-          const stillBlocking = steps.length > 0 ? getBlockingNotifyUri(steps) : null;
-          if (stillBlocking === null) {
-            clearTimeout(timeout);
-            abort();
-            dbg(`resolved after ${updateCount} updates`);
-            resolve(lastContent);
-          }
-        }
-      },
-      (err) => {
-        clearTimeout(timeout);
-        console.log(`❌ streamAgentState error after ${updateCount} updates: ${err.message}`);
-        if (lastContent) resolve(lastContent);
-        else reject(new Error(`Stream error: ${err.message}`));
-      }
-    );
-  });
-}
 
 function extractContentAfter(steps: any[], startIndex: number): string {
   for (let i = steps.length - 1; i >= Math.max(0, startIndex); i--) {
@@ -360,7 +262,7 @@ function extractContentAfter(steps: any[], startIndex: number): string {
  * Stream the AI response as chunks.
  * Auto-approves blocking NOTIFY_USER steps.
  */
-async function* streamResponse(port: number, csrf: string, apiKey: string, cascadeId: string, model: string, maxWaitMs: number): AsyncGenerator<StreamChunk> {
+export async function* streamResponse(port: number, csrf: string, apiKey: string, cascadeId: string, model: string, maxWaitMs: number, send: () => Promise<any>): AsyncGenerator<StreamChunk> {
   type QueueItem = StreamChunk | null;
   const queue: QueueItem[] = [];
   let resolve: (() => void) | null = null;
@@ -376,6 +278,7 @@ async function* streamResponse(port: number, csrf: string, apiKey: string, casca
   }
 
   let initialStepCount = -1;
+  const steps: any[] = [];
   let lastEmitted = '';
   let updateCount = 0;
   let sawRunning = false;
@@ -385,7 +288,7 @@ async function* streamResponse(port: number, csrf: string, apiKey: string, casca
   const timeout = setTimeout(() => {
     abort();
     console.log(`⏱ streamResponse timeout after ${maxWaitMs}ms — updates=${updateCount} lastEmitted=${lastEmitted.length}chars`);
-    push({ type: 'done', conversationId: cascadeId });
+    push({ type: 'error', error: 'Antigravity response timed out' });
     push(null);
   }, maxWaitMs);
 
@@ -395,13 +298,27 @@ async function* streamResponse(port: number, csrf: string, apiKey: string, casca
       updateCount++;
       const status = update?.status || '';
       const stepsUpdate = update?.mainTrajectoryUpdate?.stepsUpdate;
-      const steps: any[] = stepsUpdate?.steps || [];
+      if (stepsUpdate) {
+        const incoming = stepsUpdate.steps || [];
+        const indices = stepsUpdate.indices || incoming.map((_: any, i: number) => i);
+        incoming.forEach((step: any, i: number) => { steps[indices[i]] = step; });
+        if (typeof stepsUpdate.totalLength === 'number') steps.length = stepsUpdate.totalLength;
+      }
 
       if (initialStepCount === -1) {
         initialStepCount = steps.length;
+        send().catch(err => {
+          clearTimeout(timeout);
+          abort();
+          push({ type: 'error', error: String(err.message || err) });
+          push(null);
+        });
+        return;
       }
 
-      if (status.includes('RUNNING') || steps.length > initialStepCount) {
+      // A reused cascade can report its previous RUNNING state on subscription.
+      // Only a new step proves that the current request has started.
+      if (steps.slice(initialStepCount).some(step => step?.type === 'CORTEX_STEP_TYPE_USER_INPUT')) {
         sawRunning = true;
       }
 
@@ -412,8 +329,9 @@ async function* streamResponse(port: number, csrf: string, apiKey: string, casca
       dbg(`stream update#${updateCount} status=${status} steps=${steps.length}`);
 
       // Only extract and emit content once the current turn is active
-      if (sawRunning && steps.length > 0) {
-        const currentText = extractContent(steps);
+      if (sawRunning && steps.length > initialStepCount) {
+        // Never read planner output from the previous turn of a reused cascade.
+        const currentText = extractContentAfter(steps, initialStepCount);
         if (currentText.length > lastEmitted.length) {
           const delta = currentText.slice(lastEmitted.length);
           lastEmitted = currentText;
@@ -462,12 +380,17 @@ async function* streamResponse(port: number, csrf: string, apiKey: string, casca
     }
   );
 
-  while (true) {
-    await waitForItem();
-    while (queue.length > 0) {
-      const item = queue.shift()!;
-      if (item === null) return;
-      yield item;
+  try {
+    while (true) {
+      await waitForItem();
+      while (queue.length > 0) {
+        const item = queue.shift()!;
+        if (item === null) return;
+        yield item;
+      }
     }
+  } finally {
+    clearTimeout(timeout);
+    abort();
   }
 }
