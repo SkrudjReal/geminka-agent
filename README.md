@@ -123,7 +123,7 @@ geminka-agent/
 ├── Dockerfile              # Non-root Dockerfile с multi-stage сборкой
 ├── docker-compose.yml      # Оркестрация контейнера
 ├── pyproject.toml          # Зависимости и конфигурация инструментов
-└── system_prompt.txt       # Динамический системный промпт
+└── system_prompt.md        # Динамический системный промпт
 ```
 
 ---

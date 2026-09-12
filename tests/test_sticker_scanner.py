@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from app.core import config
 from app.services.harvester import AssetHarvester
 from app.services.sticker_scanner import StickerPackScanner
 
@@ -227,6 +228,31 @@ def test_harvester_refreshes_json_written_by_scanner(tmp_path: Path):
     metadata = harvester.get_sticker_metadata("fid", "uid")
     assert metadata is not None
     assert metadata["description"] == "Персонаж смотрит с укором"
+
+
+def test_harvester_includes_built_in_stickers(tmp_path: Path, monkeypatch):
+    assets_file = tmp_path / "user_assets.json"
+    default_file = tmp_path / "default_stickers.json"
+    assets_file.write_text(json.dumps({"stickers": {}, "sticker_packs": {}}), encoding="utf-8")
+    default_file.write_text(json.dumps([
+        {
+            "file_id": "default_fid",
+            "file_unique_id": "default_uid",
+            "emoji": "✨",
+            "set_name": "columbina_by_geminka",
+            "description": "Коломбина сияет и довольно улыбается.",
+            "tags": ["радость"],
+        }
+    ]), encoding="utf-8")
+    monkeypatch.setattr(config, "DEFAULT_STICKERS_FILE", default_file)
+
+    harvester = AssetHarvester(assets_file)
+
+    available = harvester.get_user_stickers(123)
+    assert [item["file_id"] for item in available] == ["default_fid"]
+    assert harvester.get_sticker_metadata("default_fid", "default_uid")["description"] == (
+        "Коломбина сияет и довольно улыбается."
+    )
 
 
 def test_save_scan_results_populates_empty_bot_catalog(tmp_path: Path):

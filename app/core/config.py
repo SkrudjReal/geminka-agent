@@ -190,11 +190,12 @@ STICKERS_CACHE_DIR = DATA_DIR / "stickers_cache"
 PHOTOS_CACHE_DIR = DATA_DIR / "photos_cache"
 STATE_DB_FILE = DATA_DIR / "state.db"
 STICKERS_FILE = DATA_DIR / "bot_stickers.json"
+DEFAULT_STICKERS_FILE = DATA_DIR / "default_stickers.json"
 USER_ASSETS_FILE = DATA_DIR / "user_assets.json"
 CUSTOM_EMOJIS_FILE = DATA_DIR / "custom_emojis.json"
 EMOTIONAL_STATE_FILE = DATA_DIR / "emotional_state.json"
 ADAPTIVE_STATE_FILE = DATA_DIR / "adaptive_profiles.json"
-PROMPT_FILE = BASE_DIR / "system_prompt.txt"
+PROMPT_FILE = BASE_DIR / "system_prompt.md"
 
 SYSTEM_PROMPT_DEFAULT = (
     "Ты — Geminka (Columbina), живая, умная, эмоциональная девушка-ассистент."

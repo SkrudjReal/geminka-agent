@@ -175,7 +175,7 @@ Geminka output supports specialized tags parsed automatically by `TelegramStream
        The last line of the block quotation</blockquote>
        ```
 7. **File Path & Mention Rules (Краткие имена файлов без полных путей):**
-   - При упоминании файлов, модулей или скриптов **указывай только краткое имя файла** (например, `harvester.py`, `streamer.py`, `system_prompt.txt`), а не полный абсолютный путь!
+   - При упоминании файлов, модулей или скриптов **указывай только краткое имя файла** (например, `harvester.py`, `streamer.py`, `system_prompt.md`), а не полный абсолютный путь!
    - **СТРОГО ЗАПРЕЩЕНО:** писать длинные ссылки вида `[harvester.py](file:///home/velunae/projects/mainstream/geminka-agent/app/services/harvester.py#L330)`. Это засоряет чат в Telegram и выглядит мусорно.
    - Используй аккуратное оформление кодом: `harvester.py` (или `app/services/harvester.py`, если нужно уточнить путь).
 8. **Bullet & List Formatting Rules (Символ `•` вместо `*`):**

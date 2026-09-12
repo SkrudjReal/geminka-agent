@@ -16,4 +16,4 @@ services:
       - ./memories:/app/memories
       - ./memory:/app/memory
       - ./memory/model-cache:/home/geminka/.cache
-      - ./system_prompt.txt:/app/system_prompt.txt
+      - ./system_prompt.md:/app/system_prompt.md

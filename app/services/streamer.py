@@ -88,21 +88,47 @@ SURPRISE_CAPTIONS = [
 
 # Dynamic bot-specific stickers catalog with emotion tags
 _STICKERS_CACHE: List[Dict] = []
-_STICKERS_MTIME: float = 0.0
+_STICKERS_MTIMES: tuple[int | None, int | None] = (None, None)
 _STICKERS_FILE = config.STICKERS_FILE
+_DEFAULT_STICKERS_FILE = config.DEFAULT_STICKERS_FILE
+
+
+def _load_sticker_catalog(path: Path) -> list[Dict]:
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            catalog = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to load sticker catalog %s: %s", path, exc)
+        return []
+    return catalog if isinstance(catalog, list) else []
 
 
 def get_bot_stickers() -> List[Dict]:
-    global _STICKERS_CACHE, _STICKERS_MTIME
-    if _STICKERS_FILE.exists():
-        try:
-            mtime = _STICKERS_FILE.stat().st_mtime
-            if mtime != _STICKERS_MTIME or not _STICKERS_CACHE:
-                with open(_STICKERS_FILE, "r", encoding="utf-8") as f:
-                    _STICKERS_CACHE = json.load(f)
-                _STICKERS_MTIME = mtime
-        except Exception as e:
-            logger.warning(f"Failed to reload bot stickers: {e}")
+    global _STICKERS_CACHE, _STICKERS_MTIMES
+    paths = (_DEFAULT_STICKERS_FILE, _STICKERS_FILE)
+    mtimes: tuple[int | None, int | None] = tuple(
+        path.stat().st_mtime_ns if path.exists() else None for path in paths
+    )
+    if mtimes != _STICKERS_MTIMES or not _STICKERS_CACHE:
+        merged: dict[str, Dict] = {}
+        order: list[str] = []
+        for path in paths:
+            for item in _load_sticker_catalog(path):
+                key = str(item.get("file_unique_id") or item.get("file_id") or "")
+                if not key:
+                    continue
+                if key not in merged:
+                    merged[key] = dict(item)
+                    order.append(key)
+                    continue
+                existing = merged[key]
+                for field, value in item.items():
+                    if field == "tags" and value:
+                        existing["tags"] = sorted(set(existing.get("tags", [])) | set(value))
+                    elif value not in (None, "", []):
+                        existing[field] = value
+        _STICKERS_CACHE = [dict(merged[key], index=index) for index, key in enumerate(order)]
+        _STICKERS_MTIMES = mtimes
     return _STICKERS_CACHE
 
 

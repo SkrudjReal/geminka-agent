@@ -1,6 +1,7 @@
 import pytest
 
 from app.core import config
+from app.services import streamer
 from app.services.streamer import (
     TelegramStreamConsumer,
     md_to_telegram_html,
@@ -70,6 +71,32 @@ def test_resolve_local_file_stays_inside_project(tmp_path, monkeypatch) -> None:
     assert resolve_local_file("report.md") == report.resolve()
     assert resolve_local_file(".env") is None
     assert resolve_local_file("../outside.txt") is None
+
+
+def test_bot_sticker_catalog_merges_default_and_runtime_files(tmp_path, monkeypatch) -> None:
+    default_file = tmp_path / "default_stickers.json"
+    runtime_file = tmp_path / "bot_stickers.json"
+    default_file.write_text(
+        '[{"file_unique_id":"same","file_id":"default","description":"default",'
+        '"tags":["милота"]},{"file_unique_id":"builtin","file_id":"builtin",'
+        '"description":"built-in"}]',
+        encoding="utf-8",
+    )
+    runtime_file.write_text(
+        '[{"file_unique_id":"same","file_id":"runtime","description":"runtime",'
+        '"tags":["улыбка"]},{"file_unique_id":"user","file_id":"user",'
+        '"description":"user"}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(streamer, "_DEFAULT_STICKERS_FILE", default_file)
+    monkeypatch.setattr(streamer, "_STICKERS_FILE", runtime_file)
+    monkeypatch.setattr(streamer, "_STICKERS_CACHE", [])
+    monkeypatch.setattr(streamer, "_STICKERS_MTIMES", (None, None))
+
+    catalog = streamer.get_bot_stickers()
+
+    assert [item["file_id"] for item in catalog] == ["runtime", "builtin", "user"]
+    assert catalog[0]["tags"] == ["милота", "улыбка"]
 
 
 @pytest.mark.asyncio

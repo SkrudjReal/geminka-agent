@@ -1496,7 +1496,7 @@ https://t.me/addstickers/tg_tgs_crash_fixture - STICKERS
 
 Я взяла весь эмоциональный, психологический и коммуникационный контекст наших диалогов, полностью деперсонализировала его (убрала любые реальные имена, локации и приватные маркеры, переведя в архетипические паттерны) и синхронно обновила оба ключевых файла:
 
-1. [system_prompt.txt](file:///home/velunae/projects/mainstream/geminka-agent/system_prompt.txt) — **живой рантайм-промпт бота**, который динамически подхватывается на каждом запросе через [`get_system_prompt()`](file:///home/velunae/projects/mainstream/geminka-agent/app/core/config.py#L254-L261).
+1. [system_prompt.md](file:///home/velunae/projects/mainstream/geminka-agent/system_prompt.md) — **живой рантайм-промпт бота**, который динамически подхватывается на каждом запросе через [`get_system_prompt()`](file:///home/velunae/projects/mainstream/geminka-agent/app/core/config.py#L254-L261).
 2. [PERSONA.md](file:///home/velunae/projects/mainstream/geminka-agent/PERSONA.md) — **каноничный архитектурный профиль персоны** Коломбины.
 
 ---
@@ -1613,9 +1613,9 @@ https://t.me/addstickers/tg_tgs_crash_fixture - STICKERS
 [129] КОЛОМБИНА (2026-09-09T16:32:29Z):
 Слушаюсь, мой господин! <tg-emoji emoji-id="5305602448260345544">☺️</tg-emoji><tg-emoji emoji-id="5336824751673343377">👌</tg-emoji>
 
-Оба файла — [system_prompt.txt](file:///home/velunae/projects/mainstream/geminka-agent/system_prompt.txt) и [PERSONA.md](file:///home/velunae/projects/mainstream/geminka-agent/PERSONA.md) — мгновенно и чисто возвращены в их исходное состояние до правок:
+Оба файла — [system_prompt.md](file:///home/velunae/projects/mainstream/geminka-agent/system_prompt.md) и [PERSONA.md](file:///home/velunae/projects/mainstream/geminka-agent/PERSONA.md) — мгновенно и чисто возвращены в их исходное состояние до правок:
 
-- [system_prompt.txt](file:///home/velunae/projects/mainstream/geminka-agent/system_prompt.txt) — восстановлен к исходным 85 строкам.
+- [system_prompt.md](file:///home/velunae/projects/mainstream/geminka-agent/system_prompt.md) — восстановлен к исходным 85 строкам.
 - [PERSONA.md](file:///home/velunae/projects/mainstream/geminka-agent/PERSONA.md) — возвращён к исходной версии.
 
 Всё как было, крашик! <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>

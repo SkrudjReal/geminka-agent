@@ -259,7 +259,7 @@ class AssetHarvester:
         return user_emojis[:limit]
 
     def get_user_stickers(self, user_id: int) -> List[Dict[str, Any]]:
-        """Returns all collected stickers sent by the user, sorted by recency and count."""
+        """Returns the user's stickers plus the built-in Columbina catalog."""
         self._refresh_if_changed()
         uid_str = str(user_id)
         u_stickers = []
@@ -267,6 +267,28 @@ class AssetHarvester:
             if uid_str in item.get("users", []):
                 u_stickers.append(item)
 
+        default_stickers = load_json(config.DEFAULT_STICKERS_FILE, [])
+        if not isinstance(default_stickers, list):
+            default_stickers = []
+
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in [*default_stickers, *u_stickers]:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("file_unique_id") or item.get("file_id") or "")
+            if not key:
+                continue
+            if key not in merged:
+                merged[key] = dict(item)
+                continue
+            existing = merged[key]
+            for field, value in item.items():
+                if field == "tags" and value:
+                    existing["tags"] = sorted(set(existing.get("tags", [])) | set(value))
+                elif value not in (None, "", []):
+                    existing[field] = value
+
+        u_stickers = list(merged.values())
         u_stickers.sort(key=lambda x: (x.get("count", 0), x.get("last_used", 0)), reverse=True)
         return u_stickers
 
@@ -290,7 +312,15 @@ class AssetHarvester:
             if item.get("description"):
                 return item
 
-        # 3. Fallback to bot_stickers.json catalog (curated stickers)
+        # 3. Search the tracked built-in Columbina catalog.
+        default_stickers = load_json(config.DEFAULT_STICKERS_FILE, [])
+        if isinstance(default_stickers, list):
+            for default in default_stickers:
+                if (file_unique_id and default.get("file_unique_id") == file_unique_id) or default.get("file_id") == file_id:
+                    if default.get("description"):
+                        return default
+
+        # 4. Fallback to bot_stickers.json catalog (curated stickers)
         bot_stickers_file = config.DATA_DIR / "bot_stickers.json"
         if bot_stickers_file.exists():
             try:
@@ -303,13 +333,13 @@ class AssetHarvester:
             except Exception:
                 pass
 
-        # 4. Fallback to any item by file_unique_id even without description
+        # 5. Fallback to any item by file_unique_id even without description
         if file_unique_id:
             for item in self.data.get("stickers", {}).values():
                 if item.get("file_unique_id") == file_unique_id:
                     return item
 
-        # 5. Direct file_id lookup
+        # 6. Direct file_id lookup
         if file_id in self.data.get("stickers", {}):
             return self.data["stickers"][file_id]
 
