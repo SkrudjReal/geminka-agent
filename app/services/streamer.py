@@ -7,6 +7,7 @@ Inspired by Hermes Agent formatting & streaming architecture:
 - Native Message Reactions (<tg-react emoji="❤" /> or <tg-react custom-emoji-id="..." />)
 - Conditional Context-Aware Quote Replies (<tg-reply />)
 - Dual Photo delivery with spoiler reply (<tg-send-photos />)
+- Local document delivery (<tg-file path="..." caption="..." />)
 - Progressive message edits with adaptive debounce (0.8s)
 - Animated streaming cursor (▉) during generation это пиздёж
 - Dynamic think-tag (<think>...</think>) suppression
@@ -50,6 +51,19 @@ REPLY_TAG_RE = re.compile(r"<tg-reply(?:\s*/>|\s+[^>]*/>)", re.IGNORECASE)
 RP_TAG_RE = re.compile(r"<tg-rp\s+([^>]+)\s*/?>", re.IGNORECASE)
 PHOTO_PAIR_TAG_RE = re.compile(r"<tg-send-photos\s*/?>|<tg-photo-pair\s*/?>", re.IGNORECASE)
 CUSTOM_PHOTO_TAG_RE = re.compile(r"<tg-photo\s+([^>]+)\s*/?>", re.IGNORECASE)
+FILE_TAG_RE = re.compile(r"<tg-file\s+([^>]+)\s*/?>", re.IGNORECASE)
+
+_BLOCKED_FILE_NAMES = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    "state.db",
+    "user_assets.json",
+    "custom_emojis.json",
+    "emotional_state.json",
+    "adaptive_profiles.json",
+}
+_BLOCKED_FILE_DIRS = {".git", ".venv", "__pycache__"}
 
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$")
 
@@ -429,10 +443,55 @@ INCOMPLETE_CONTROL_TAG_RE = re.compile(
 
 def strip_delivery_tags(text: str) -> str:
     """Remove model control tags and incomplete/half-typed control tags from Telegram-visible text."""
-    for pattern in (STICKER_TAG_RE, REACT_TAG_RE, REPLY_TAG_RE, RP_TAG_RE, PHOTO_PAIR_TAG_RE, CUSTOM_PHOTO_TAG_RE):
+    for pattern in (
+        STICKER_TAG_RE,
+        REACT_TAG_RE,
+        REPLY_TAG_RE,
+        RP_TAG_RE,
+        PHOTO_PAIR_TAG_RE,
+        CUSTOM_PHOTO_TAG_RE,
+        FILE_TAG_RE,
+    ):
         text = pattern.sub("", text)
     text = INCOMPLETE_CONTROL_TAG_RE.sub("", text)
     return text.strip()
+
+
+def _tag_attr(attrs_str: str, name: str) -> str | None:
+    match = re.search(rf'\b{name}\s*=\s*(["\'])(.*?)\1', attrs_str, re.IGNORECASE | re.DOTALL)
+    return html.unescape(match.group(2)).strip() if match else None
+
+
+def resolve_local_file(raw_path: str) -> Path | None:
+    """Resolve a model-requested file without allowing path traversal or secrets."""
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = config.BASE_DIR / candidate
+
+    try:
+        resolved = candidate.resolve(strict=True)
+        project_root = config.BASE_DIR.resolve()
+        relative = resolved.relative_to(project_root)
+        file_size = resolved.stat().st_size
+    except (OSError, ValueError):
+        logger.warning("Skipping unavailable outgoing file: %s", raw_path)
+        return None
+
+    if any(part in _BLOCKED_FILE_DIRS for part in relative.parts) or resolved.name.lower() in _BLOCKED_FILE_NAMES:
+        logger.warning("Skipping blocked outgoing file: %s", relative)
+        return None
+    if not resolved.is_file():
+        logger.warning("Skipping non-file outgoing path: %s", relative)
+        return None
+    if file_size > config.settings.max_download_bytes:
+        logger.warning(
+            "Skipping oversized outgoing file %s (%d bytes; limit %d)",
+            relative,
+            file_size,
+            config.settings.max_download_bytes,
+        )
+        return None
+    return resolved
 
 
 class TelegramStreamConsumer:
@@ -738,6 +797,33 @@ class TelegramStreamConsumer:
                         )
                     except Exception as e:
                         logger.warning(f"Failed to send custom photo {p_file}: {e}")
+
+        # Send local document(s) if <tg-file path="..." caption="..."/> is present.
+        for m_file in FILE_TAG_RE.finditer(final_raw):
+            file_attrs = m_file.group(1)
+            raw_file_path = _tag_attr(file_attrs, "path")
+            if not raw_file_path:
+                logger.warning("Skipping <tg-file> without a path")
+                continue
+
+            file_path = resolve_local_file(raw_file_path)
+            if not file_path:
+                continue
+
+            caption = _tag_attr(file_attrs, "caption")
+            caption = caption[:1024] if caption else None
+            html_caption = md_to_telegram_html(caption) if caption else None
+            try:
+                await self.bot.send_document(
+                    chat_id=self.chat_id,
+                    document=FSInputFile(str(file_path)),
+                    caption=html_caption,
+                    parse_mode=ParseMode.HTML if html_caption else None,
+                    message_thread_id=self.message_thread_id,
+                    reply_parameters=reply_params,
+                )
+            except Exception as e:
+                logger.warning("Failed to send custom file %s: %s", file_path, e)
 
         # Send native Telegram sticker
         if sticker_file_id:

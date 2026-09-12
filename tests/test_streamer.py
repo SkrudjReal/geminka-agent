@@ -1,6 +1,12 @@
 import pytest
 
-from app.services.streamer import TelegramStreamConsumer, md_to_telegram_html, split_telegram_text
+from app.core import config
+from app.services.streamer import (
+    TelegramStreamConsumer,
+    md_to_telegram_html,
+    resolve_local_file,
+    split_telegram_text,
+)
 
 
 def test_html_inside_code_fence_is_escaped() -> None:
@@ -28,6 +34,11 @@ class _FakeBot:
         return _SentMessage()
 
 
+class _FileBot(_FakeBot):
+    async def send_document(self, *args, **kwargs):
+        self.calls.append(kwargs)
+
+
 @pytest.mark.asyncio
 async def test_final_stream_message_keeps_forum_thread_id() -> None:
     bot = _FakeBot()
@@ -47,3 +58,34 @@ async def test_final_stream_message_keeps_forum_thread_id() -> None:
 
     assert bot.calls
     assert bot.calls[0]["message_thread_id"] == 5
+
+
+def test_resolve_local_file_stays_inside_project(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    report = tmp_path / "report.md"
+    report.write_text("report", encoding="utf-8")
+    secret = tmp_path / ".env"
+    secret.write_text("TOKEN=secret", encoding="utf-8")
+
+    assert resolve_local_file("report.md") == report.resolve()
+    assert resolve_local_file(".env") is None
+    assert resolve_local_file("../outside.txt") is None
+
+
+@pytest.mark.asyncio
+async def test_stream_sends_local_file_and_hides_control_tag(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    document_path = tmp_path / "PERSONA.md"
+    document_path.write_text("persona", encoding="utf-8")
+    bot = _FileBot()
+    consumer = TelegramStreamConsumer(bot=bot, chat_id=123)
+
+    async def tokens():
+        yield '<tg-file path="PERSONA.md" caption="Persona **file**"/>'
+
+    result = await consumer.stream_from_generator(tokens())
+
+    assert result == ""
+    assert len(bot.calls) == 1
+    assert bot.calls[0]["document"].path == str(document_path)
+    assert bot.calls[0]["caption"] == "Persona <b>file</b>"
