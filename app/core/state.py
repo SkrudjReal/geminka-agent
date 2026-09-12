@@ -27,6 +27,18 @@ class StateStore:
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
+    @staticmethod
+    def _ensure_preference_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(user_preferences)")
+        }
+        if "conversation_id" not in columns:
+            connection.execute("ALTER TABLE user_preferences ADD COLUMN conversation_id TEXT")
+        if "debug_mode" not in columns:
+            connection.execute(
+                "ALTER TABLE user_preferences ADD COLUMN debug_mode INTEGER NOT NULL DEFAULT 0"
+            )
+
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
@@ -37,6 +49,7 @@ class StateStore:
                     model TEXT,
                     reasoning TEXT,
                     conversation_id TEXT,
+                    debug_mode INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL
                 );
 
@@ -64,25 +77,43 @@ class StateStore:
                     ON user_memories(user_id, id);
                 """
             )
+            self._ensure_preference_columns(connection)
 
-    def get_preferences(self, user_id: int) -> dict[str, str | None]:
+    def get_preferences(self, user_id: int) -> dict[str, str | bool | None]:
         with self._lock, self._connect() as connection:
-            # Ensure column exists for existing DBs
-            try:
-                connection.execute("ALTER TABLE user_preferences ADD COLUMN conversation_id TEXT")
-            except sqlite3.OperationalError:
-                pass
+            self._ensure_preference_columns(connection)
             row = connection.execute(
-                "SELECT model, reasoning, conversation_id FROM user_preferences WHERE user_id = ?",
+                "SELECT model, reasoning, conversation_id, debug_mode "
+                "FROM user_preferences WHERE user_id = ?",
                 (user_id,),
             ).fetchone()
         if row is None:
-            return {"model": None, "reasoning": None, "conversation_id": None}
+            return {
+                "model": None,
+                "reasoning": None,
+                "conversation_id": None,
+                "debug_mode": False,
+            }
         return {
             "model": row["model"],
             "reasoning": row["reasoning"],
             "conversation_id": row["conversation_id"] if "conversation_id" in row.keys() else None,
+            "debug_mode": bool(row["debug_mode"]) if "debug_mode" in row.keys() else False,
         }
+
+    def is_debug_mode(self, user_id: int) -> bool:
+        return bool(self.get_preferences(user_id).get("debug_mode"))
+
+    def set_debug_mode(self, user_id: int, enabled: bool) -> None:
+        with self._lock, self._connect() as connection:
+            self._ensure_preference_columns(connection)
+            now = time.time()
+            connection.execute(
+                "INSERT INTO user_preferences(user_id, debug_mode, updated_at) VALUES(?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET debug_mode = excluded.debug_mode, "
+                "updated_at = excluded.updated_at",
+                (user_id, int(enabled), now),
+            )
 
     def get_conversation_id(self, user_id: int) -> str | None:
         prefs = self.get_preferences(user_id)
@@ -90,10 +121,7 @@ class StateStore:
 
     def set_conversation_id(self, user_id: int, conversation_id: str | None) -> None:
         with self._lock, self._connect() as connection:
-            try:
-                connection.execute("ALTER TABLE user_preferences ADD COLUMN conversation_id TEXT")
-            except sqlite3.OperationalError:
-                pass
+            self._ensure_preference_columns(connection)
             connection.execute(
                 "INSERT INTO user_preferences(user_id, updated_at) VALUES(?, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET updated_at = excluded.updated_at",

@@ -94,7 +94,7 @@ class EmotionalEngine:
         except Exception as e:
             logger.warning(f"Failed to save emotional states: {e}")
 
-    def get_state(self, user_id: int) -> EmotionalState:
+    def get_state(self, user_id: int, *, persist: bool = True) -> EmotionalState:
         uid_str = str(user_id)
         if uid_str not in self.states:
             if "default" in self.states:
@@ -109,7 +109,8 @@ class EmotionalEngine:
                 )
             else:
                 self.states[uid_str] = EmotionalState(user_id=user_id)
-            self.save()
+            if persist:
+                self.save()
         return self.states[uid_str]
 
     def reset_state(self, user_id: int) -> EmotionalState:

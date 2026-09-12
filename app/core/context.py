@@ -77,6 +77,8 @@ class ContextManager:
         return messages
 
     def add_exchange(self, user_id: int, user_content: str, assistant_content: str) -> None:
+        if self.store.is_debug_mode(user_id):
+            return
         self.store.add_exchange(
             user_id,
             user_content[: self.max_message_chars],

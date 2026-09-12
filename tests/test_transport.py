@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
 from app.core.context import ContextManager
 from app.core.state import StateStore
 from app.services.antigravity import AntigravityClient, GatewayUnavailable
+from app.services.palace_memory import PalaceMemory
 from app.services.rag import RAGMemoryEngine
 
 
@@ -43,6 +46,48 @@ async def test_retry_before_output_does_not_duplicate(tmp_path) -> None:
     assert output == ["OK"]
     assert calls == 2
     assert store.get_messages(1)[-1]["content"] == "OK"
+
+
+async def test_debug_request_does_not_persist_local_or_server_context(tmp_path) -> None:
+    collections = {}
+
+    class EmptyCollection:
+        def count(self):
+            return 0
+
+    def factory(path, **kwargs):
+        return collections.setdefault(path, EmptyCollection())
+
+    store = StateStore(tmp_path / "state.db")
+    store.set_conversation_id(1, "existing-session")
+    store.set_debug_mode(1, True)
+    debug_memory = PalaceMemory(tmp_path / "memory", factory, debug_checker=store.is_debug_mode)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "existing-session" not in request.content.decode()
+        assert "x-conversation-id" not in request.headers
+        body = 'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n'
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = AntigravityClient(
+            store=store,
+            contexts=ContextManager(store),
+            memories=debug_memory,
+            http_client=http,
+        )
+        assert [
+            token
+            async for token in client.generate_stream(
+                1,
+                "не записывай",
+                memory_input={"private": True, "text": "не записывай", "key": "debug-event"},
+            )
+        ] == ["OK"]
+
+    assert store.get_conversation_id(1) == "existing-session"
+    assert store.get_messages(1) == []
+    assert debug_memory._collection(1).count() == 0
 
 
 async def test_stream_is_not_retried_after_first_token(tmp_path) -> None:
@@ -190,6 +235,62 @@ async def test_502_thought_only_retries(tmp_path) -> None:
 
     assert tokens == ["Answer"]
     assert calls == 2
+
+
+async def test_model_capacity_error_inside_sse_retries(tmp_path) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            error = {
+                "error": {
+                    "userErrorMessage": "Encountered retryable error from model provider",
+                    "shortError": "UNAVAILABLE (code 503): No capacity available for model claude-sonnet-4-6 on the server",
+                    "errorCode": 503,
+                    "details": "MODEL_CAPACITY_EXHAUSTED",
+                },
+                "shouldShowModel": True,
+            }
+            body = (
+                'data: {"_conversation_id":"failed-cascade","choices":[]}'
+                f'\n\ndata: {{"choices":[{{"delta":{{"content":{json.dumps(json.dumps(error))}}}}}]}}'
+                "\n\ndata: [DONE]\n\n"
+            )
+            return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+        body = (
+            'data: {"_conversation_id":"working-cascade","choices":[]}'
+            '\n\ndata: {"choices":[{"delta":{"content":"Recovered"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    store = StateStore(tmp_path / "state.db")
+    memory = RAGMemoryEngine(store)
+    memory.project_memory = ""
+    memory.owner_profile = ""
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = AntigravityClient(
+        "http://gateway.test/v1",
+        store=store,
+        contexts=ContextManager(store),
+        memories=memory,
+        http_client=http_client,
+    )
+    client.set_user_model(1, "google-antigravity/claude-sonnet-4-6")
+
+    async def no_wait(attempt: int) -> None:
+        return None
+
+    client._backoff = no_wait
+    tokens = [token async for token in client.generate_stream(1, "hello")]
+    await http_client.aclose()
+
+    assert tokens == ["Recovered"]
+    assert calls == 2
+    assert store.get_conversation_id(1) == "working-cascade"
 
 
 async def test_check_health_and_list_models(tmp_path) -> None:

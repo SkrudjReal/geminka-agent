@@ -38,12 +38,30 @@ def test_conversation_id_storage_and_switch(tmp_path) -> None:
     path = tmp_path / "state.db"
     store = StateStore(path)
     assert store.get_conversation_id(42) is None
-
     store.set_conversation_id(42, "2ccc81af-14a1-422d-91b8-7085fe98c1df")
     assert store.get_conversation_id(42) == "2ccc81af-14a1-422d-91b8-7085fe98c1df"
 
     store.set_conversation_id(42, None)
     assert store.get_conversation_id(42) is None
+
+
+def test_debug_mode_persists_and_blocks_context_writes(tmp_path) -> None:
+    path = tmp_path / "state.db"
+    store = StateStore(path)
+    context = ContextManager(store)
+
+    context.add_exchange(7, "before", "reply")
+    assert len(store.get_messages(7)) == 2
+
+    store.set_debug_mode(7, True)
+    assert store.is_debug_mode(7)
+    assert StateStore(path).is_debug_mode(7)
+    context.add_exchange(7, "during", "not saved")
+    assert [item["content"] for item in store.get_messages(7)] == ["before", "reply"]
+
+    store.set_debug_mode(7, False)
+    context.add_exchange(7, "after", "saved")
+    assert [item["content"] for item in store.get_messages(7)][-2:] == ["after", "saved"]
 
 
 def test_import_messages(tmp_path) -> None:

@@ -13,7 +13,6 @@ import logging
 import math
 import os
 import re
-import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.core import config
 from app.core.files import atomic_write_json, load_json
+from app.core.state import state_store
 
 logger = logging.getLogger("geminka-scanner")
 
@@ -147,7 +147,7 @@ class StickerPackScanner:
         draw = ImageDraw.Draw(sheet_img)
         font = self._load_font(size=22)
 
-        for rel_idx, (global_idx, img_path, emoji_char) in enumerate(items):
+        for rel_idx, (global_idx, img_path, _emoji_char) in enumerate(items):
             c = rel_idx % cols
             r = rel_idx // cols
             x = pad + c * (tile_size + pad)
@@ -251,7 +251,8 @@ class StickerPackScanner:
             "max_tokens": 4096,
         }
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        timeout = httpx.Timeout(360.0, connect=30.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=payload)
             if resp.status_code != 200:
                 raise RuntimeError(f"OMP Vision HTTP {resp.status_code}: {resp.text[:300]}")
@@ -284,8 +285,11 @@ class StickerPackScanner:
         stickers_metadata: List[Dict[str, Any]],
         pack_summary: str,
         grid_paths: List[Path],
+        user_id: Optional[int] = None,
     ) -> None:
         """Atomically persists scan descriptions and pack summary to user_assets.json and bot_stickers.json."""
+        if user_id is not None and state_store.is_debug_mode(user_id):
+            return
         # 1. Update user_assets.json
         user_assets = load_json(self.assets_file, {})
         user_assets.setdefault("stickers", {})
@@ -351,7 +355,7 @@ class StickerPackScanner:
 
                     if modified:
                         atomic_write_json(self.bot_stickers_file, bot_stickers)
-                        logger.info(f"Updated bot_stickers.json with enriched scan descriptions.")
+                        logger.info("Updated bot_stickers.json with enriched scan descriptions.")
             except Exception as e:
                 logger.warning(f"Failed to update bot_stickers.json: {e}")
 
@@ -365,10 +369,14 @@ class StickerPackScanner:
         """Full pipeline: downloads set, generates numbered contact sheet grids, scans with Vision AI, and saves."""
         if not set_name or set_name == "unknown":
             return False
+        if user_id is not None and state_store.is_debug_mode(user_id):
+            return False
 
         lock = self._get_lock(set_name)
         async with lock:
             user_assets = load_json(self.assets_file, {})
+            if user_id is not None and state_store.is_debug_mode(user_id):
+                return False
             p_info = user_assets.get("sticker_packs", {}).get(set_name, {})
             if not force and p_info.get("scanned") and p_info.get("summary"):
                 logger.debug(f"Pack '{set_name}' is already scanned. Skipping.")
@@ -393,6 +401,8 @@ class StickerPackScanner:
             # 1. Download & convert all stickers to PNG frames
             items_to_render: List[Tuple[int, Path, str, Any]] = []
             for idx, s in enumerate(stickers, start=1):
+                if user_id is not None and state_store.is_debug_mode(user_id):
+                    return False
                 png_path = await self.download_sticker_frame(bot, s)
                 emoji_char = s.emoji or "✨"
                 items_to_render.append((idx, png_path, emoji_char, s))
@@ -413,22 +423,26 @@ class StickerPackScanner:
                 grid_path = self.render_grid_sheet(sheet_tuples, set_name, sheet_idx)
                 grid_paths.append(grid_path)
 
-                # 3. Vision scanning
+                # 3. Vision scanning with resilience
                 items_on_sheet = [(idx, em) for (idx, _, em, _) in batch]
-                scan_res = await self.scan_grid_with_vision(
-                    grid_path=grid_path,
-                    items_on_sheet=items_on_sheet,
-                    set_title=set_title,
-                    set_name=set_name,
-                    is_first_sheet=(sheet_idx == 1),
-                )
+                try:
+                    scan_res = await self.scan_grid_with_vision(
+                        grid_path=grid_path,
+                        items_on_sheet=items_on_sheet,
+                        set_title=set_title,
+                        set_name=set_name,
+                        is_first_sheet=(sheet_idx == 1),
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to scan sheet {sheet_idx} of pack '{set_name}': {e}")
+                    scan_res = {}
 
                 if sheet_idx == 1 and scan_res.get("pack_summary"):
                     overall_pack_summary = scan_res["pack_summary"].strip()
 
                 parsed_by_index = {item.get("index"): item for item in scan_res.get("stickers", [])}
 
-                for idx, png_path, emoji_char, sticker_obj in batch:
+                for idx, _png_path, emoji_char, sticker_obj in batch:
                     item_scan = parsed_by_index.get(idx, {})
                     text_on_stk = (item_scan.get("text_on_sticker") or "").strip()
                     desc = (item_scan.get("description") or "").strip()
@@ -464,6 +478,18 @@ class StickerPackScanner:
                         "grid_index": idx,
                     })
 
+                # Incrementally persist progress after each completed sheet
+                if user_id is not None and state_store.is_debug_mode(user_id):
+                    return False
+                self.save_scan_results(
+                    set_name=set_name,
+                    set_title=set_title,
+                    stickers_metadata=enriched_stickers,
+                    pack_summary=overall_pack_summary,
+                    grid_paths=grid_paths,
+                    user_id=user_id,
+                )
+
             # Fallback if pack_summary was missing
             if not overall_pack_summary:
                 overall_pack_summary = (
@@ -479,6 +505,7 @@ class StickerPackScanner:
                 stickers_metadata=enriched_stickers,
                 pack_summary=overall_pack_summary,
                 grid_paths=grid_paths,
+                user_id=user_id,
             )
 
             logger.info(f"✅ Successfully scanned and enriched pack '{set_name}' with {len(enriched_stickers)} items.")

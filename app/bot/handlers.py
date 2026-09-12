@@ -1,5 +1,6 @@
 """Telegram bot command and message handlers for Geminka."""
 
+import asyncio
 import html
 import logging
 import random
@@ -21,11 +22,13 @@ from app.bot.helpers import extract_message_context, send_response
 from app.bot.middlewares import check_auth
 from app.core import config
 from app.core.concurrency import user_locks
+from app.core.state import state_store
 from app.engines.adaptive import adaptive_engine
 from app.engines.emotional import MOOD_DEFINITIONS, emotion_engine
 from app.engines.rp import detect_rp_command, get_random_rp_phrase
 from app.services.antigravity import AVAILABLE_MODELS, AntigravityClient
 from app.services.harvester import asset_harvester
+from app.services.palace_memory import MemoryWriteDisabled
 from app.services.rag import MemoryRejected, rag_engine
 from app.services.streamer import TelegramStreamConsumer, md_to_telegram_html
 from app.services.topics import topic_manager
@@ -43,6 +46,8 @@ async def handle_message_reaction(event: types.MessageReactionUpdated, bot: Bot)
     """Handles reactions put by the user on the bot's messages."""
     user_id = event.user.id if event.user else (event.actor_chat.id if event.actor_chat else 0)
     if not check_auth(user_id):
+        return
+    if state_store.is_debug_mode(user_id):
         return
 
     added = event.new_reaction
@@ -74,6 +79,7 @@ async def cmd_start(message: types.Message):
         '• `/mood` — 💖 Моё эмоциональное состояние, шкала чувств и сброс (`/mood reset`)\n'
         '• `/memory` — 📖 Долговременная память, сохранённые факты и контекст\n'
         '• `/remember <текст>` — 💡 Запомнить важный факт о тебе в базу данных\n'
+        '• `/debug` — 🧪 переключить режим без записи новой памяти (`on` / `off`)\n'
         '• `/rp` — 🌸 Справочник интерактивных ролевых действий и команд\n'
         '• `/topic` — ⚙️ Настройка чатов топиков (Forum Threads)\n'
         '• `/conv <id>` — 💬 Переключить диалог/сессию по Conversation ID\n'
@@ -271,7 +277,10 @@ async def cmd_mood(message: types.Message, command: CommandObject | None = None)
         )
         return
 
-    state = emotion_engine.get_state(message.from_user.id)
+    state = emotion_engine.get_state(
+        message.from_user.id,
+        persist=not state_store.is_debug_mode(message.from_user.id),
+    )
     mood_ru = MOOD_DEFINITIONS.get(state.mood, (state.mood, "", 70))[1]
     stage = state.get_relationship_stage()
     stage_desc = state.get_stage_description()
@@ -373,13 +382,77 @@ async def cmd_conv(message: types.Message, antigravity_client: AntigravityClient
     await message.answer(response_text, parse_mode=ParseMode.HTML)
 
 
+@router.message(Command("debug"))
+async def cmd_debug(message: types.Message, command: CommandObject):
+    if not check_auth(message.from_user.id):
+        await message.answer("⛔ Доступ ограничен.")
+        return
+
+    current = state_store.is_debug_mode(message.from_user.id)
+    arg = (command.args or "").strip().lower()
+    if arg in {"on", "1", "true", "вкл", "включить"}:
+        enabled = True
+    elif arg in {"off", "0", "false", "выкл", "выключить"}:
+        enabled = False
+    elif arg in {"status", "статус"}:
+        await message.answer(
+            f"🧪 Debug режим: <b>{'включён' if current else 'выключен'}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    elif arg:
+        await message.answer("Использование: /debug, /debug on, /debug off или /debug status")
+        return
+    else:
+        enabled = not current
+
+    state_store.set_debug_mode(message.from_user.id, enabled)
+    if enabled:
+        await rag_engine.cancel_analysis(message.from_user.id)
+        await message.answer(
+            "🧪 Debug режим включён. Новые сообщения не будут записываться в MemPalace, "
+            "контекст SQLite, профили, каталог ассетов и кэш вложений. Старую память можно "
+            "читать, но новые данные не добавляются. Отключить: /debug off"
+        )
+    else:
+        await message.answer("🧪 Debug режим выключен. Запись памяти снова включена.")
+
+
+@router.message(Command("portrait", "recall", "forget"))
+async def cmd_palace(message: types.Message, command: CommandObject, antigravity_client: AntigravityClient):
+    if not check_auth(message.from_user.id) or message.chat.type != "private":
+        await message.answer("Личная память доступна только в разрешённом личном чате.")
+        return
+    user_id = message.from_user.id
+    async with user_locks.get(user_id):
+        if command.command == "portrait":
+            text = await asyncio.to_thread(rag_engine.portrait, user_id)
+            await send_response(message, text or "Портрет ещё формируется по сообщениям.")
+        elif command.command == "recall":
+            if not command.args:
+                await message.answer("Напиши /recall и вопрос к памяти.")
+                return
+            text = await asyncio.to_thread(rag_engine.format_rag_context, user_id, command.args)
+            await send_response(message, text or "Память пока пуста.")
+        elif command.args != "confirm":
+            await message.answer("Чтобы удалить архив, факты и портрет, напиши /forget confirm. Старый SQLite-архив для отката останется на диске, но повторно импортироваться не будет.")
+        else:
+            await rag_engine.forget(user_id)
+            antigravity_client.contexts.clear_user_context(user_id)
+            antigravity_client.store.set_conversation_id(user_id, None)
+            await message.answer("Личная память MemPalace и текущий контекст удалены. Следующие сообщения начнут новую память.")
+
+
 @router.message(Command("memory", "memories"))
 async def cmd_memory(message: types.Message):
     if not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
 
-    all_mems = rag_engine.get_all_memories_list(message.from_user.id)
+    if message.chat.type != "private":
+        await message.answer("Личная память доступна в личном чате со мной.")
+        return
+    all_mems = await asyncio.to_thread(rag_engine.get_all_memories_list, message.from_user.id)
     total = len(all_mems)
 
     preview_items = []
@@ -394,7 +467,7 @@ async def cmd_memory(message: types.Message):
     text = (
         f'<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Личная долговременная память:**\n\n'
         f"• **Всего фрагментов памяти:** `{total}`\n"
-        f"• **Хранилище:** `SQLite, изоляция по Telegram user ID`\n"
+        f"• **Хранилище:** `MemPalace, отдельный palace на Telegram user ID`\n"
         f"• **Sliding Context Window:** `Active (15 turns / 24k chars)`\n\n"
         f"🧠 **Примеры сохранённых фактов:**\n"
         f"{preview_text}\n\n"
@@ -419,7 +492,10 @@ async def cmd_remember(message: types.Message):
 
     fact_text = args[0].strip()
     try:
-        added = rag_engine.add_memory(message.from_user.id, fact_text, category="user_custom")
+        added = await asyncio.to_thread(rag_engine.add_memory, message.from_user.id, fact_text, category="user_custom")
+    except MemoryWriteDisabled as exc:
+        await message.answer(f"🧪 {html.escape(str(exc))}", parse_mode=ParseMode.HTML)
+        return
     except MemoryRejected as exc:
         await message.answer(f"⚠️ {html.escape(str(exc))}", parse_mode=ParseMode.HTML)
         return
@@ -442,8 +518,11 @@ async def cmd_status(message: types.Message, antigravity_client: AntigravityClie
     is_omp_alive = await antigravity_client.check_omp_health()
     current_model = antigravity_client.get_user_model(message.from_user.id)
     current_reasoning = antigravity_client.get_user_reasoning(message.from_user.id)
-    state = emotion_engine.get_state(message.from_user.id)
-    total_memories = rag_engine.count(message.from_user.id)
+    state = emotion_engine.get_state(
+        message.from_user.id,
+        persist=not state_store.is_debug_mode(message.from_user.id),
+    )
+    total_memories = await asyncio.to_thread(rag_engine.count, message.from_user.id)
 
     engine_status = (
         f"🟢 OMP Gateway (`{config.OMP_BASE_URL}`) [Active]"
@@ -500,6 +579,7 @@ async def cmd_help(message: types.Message):
         '• `/mood` — текущее настроение, теплота и статус отношений (`/mood reset` для сброса)\n'
         '• `/memory` — просмотр сохранённых фрагментов долговременной памяти\n'
         '• `/remember <факт>` — сохранить новый факт в личную базу данных\n'
+        '• `/debug` — временно отключить запись новой памяти (`on` / `off` / `status`)\n'
         '• `/rp` — список интерактивных ролевых действий\n'
         '• `/topic` — настройка и управление чатами топиков\n'
         '• `/new` — начать новый диалог (очистить контекстное окно)\n'
@@ -757,7 +837,8 @@ async def handle_any_message(
             await message.answer("⛔ Доступ ограничен.")
             return
 
-    raw_user_content = await extract_message_context(message, bot)
+    debug_mode = state_store.is_debug_mode(message.from_user.id)
+    raw_user_content = await extract_message_context(message, bot, persist=not debug_mode)
     if not raw_user_content:
         return
 
@@ -782,13 +863,13 @@ async def handle_any_message(
             await message.reply(rp_banner, parse_mode=ParseMode.HTML)
 
         # Sweet RP actions boost warmth & affection
-        if action in ['погладить', 'обнять', 'поцеловать', 'потискать', 'чай', 'покормить', 'кусь']:
+        if not debug_mode and action in ['погладить', 'обнять', 'поцеловать', 'потискать', 'чай', 'покормить', 'кусь']:
             state = emotion_engine.get_state(message.from_user.id)
             state.affection = min(100, state.affection + 5)
             state.warmth = min(100, state.warmth + 4)
             state.affinity += 3
             state.mood = "affectionate" if state.warmth > 80 else "playful"
-            emotion_engine.save_state()
+            emotion_engine.save()
 
         if not extra_text:
             raw_user_content = f"[{user_mention} выполнил(-а) RP-действие: «{action}» по отношению к Коломбине. Отреагируй на это взаимно, нежно, эмоционально и в характере!]"
@@ -811,18 +892,23 @@ async def handle_any_message(
             )
 
     # Update emotional state
-    emotion_engine.update_from_input(message.from_user.id, raw_user_content)
-    emotional_context = emotion_engine.format_prompt_context(message.from_user.id)
+    if debug_mode:
+        emotional_context = ""
+    else:
+        emotion_engine.update_from_input(message.from_user.id, raw_user_content)
+        emotional_context = emotion_engine.format_prompt_context(message.from_user.id)
 
-    # Adaptive Psychotype & Communication Mirroring
-    st_emoji = message.sticker.emoji if message.sticker else ""
-    adaptive_engine.analyze_message(
-        user_id=message.from_user.id,
-        text=user_text or raw_user_content,
-        has_sticker=bool(message.sticker),
-        sticker_emoji=st_emoji,
-    )
-    adaptive_context = adaptive_engine.format_adaptive_prompt_context(message.from_user.id)
+    # MemPalace is the authoritative user portrait in private conversations.
+    # Keep the legacy communication adapter only for the separate group context.
+    adaptive_context = ""
+    if not debug_mode and message.chat.type != "private":
+        adaptive_engine.analyze_message(
+            user_id=message.from_user.id,
+            text=user_text or raw_user_content,
+            has_sticker=bool(message.sticker),
+            sticker_emoji=message.sticker.emoji if message.sticker else "",
+        )
+        adaptive_context = adaptive_engine.format_adaptive_prompt_context(message.from_user.id)
     user_emojis_context = asset_harvester.format_emojis_prompt_context(message.from_user.id)
 
     user_id = message.from_user.id
@@ -845,6 +931,17 @@ async def handle_any_message(
             message_thread_id=message.message_thread_id,
         ):
             stream_gen = antigravity_client.generate_stream(
+                memory_input={
+                    "private": message.chat.type == "private",
+                    "text": message.text or message.caption or "",
+                    "key": f"tg:{message.chat.id}:{message.message_id}",
+                    "date": message.date.isoformat(),
+                    "chat_id": message.chat.id,
+                    "media": str(message.content_type),
+                    "name": message.from_user.full_name,
+                    "username": message.from_user.username or "",
+                    "debug": debug_mode,
+                },
                 user_id=message.from_user.id,
                 prompt=raw_user_content,
                 emotional_context=emotional_context,

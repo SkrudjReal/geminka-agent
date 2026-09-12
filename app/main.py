@@ -16,6 +16,7 @@ from app.core.logger import setup_logging
 from app.services.antigravity import AntigravityClient
 from app.services.broadcaster import broadcast
 from app.services.omp_gateway import start_omp_gateway_task
+from app.services.palace_memory import palace_memory
 
 logger = logging.getLogger("geminka-main")
 
@@ -29,6 +30,10 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="mood", description="💖 Настроение, шкала чувств и сброс эмоций"),
         BotCommand(command="memory", description="📖 Долговременная память и сохранённые факты"),
         BotCommand(command="remember", description="💡 Запомнить новый факт о тебе"),
+        BotCommand(command="portrait", description="🧠 Мой текущий портрет тебя"),
+        BotCommand(command="recall", description="🔎 Поиск по долговременной памяти"),
+        BotCommand(command="forget", description="🗑 Удалить мою личную память"),
+        BotCommand(command="debug", description="🧪 Временно отключить запись памяти"),
         BotCommand(command="rp", description="🌸 Справочник интерактивных RP-действий"),
         BotCommand(command="topic", description="⚙️ Настройка чатов топиков (Forum Threads)"),
         BotCommand(command="conv", description="💬 Переключить диалог/сессию по ID"),
@@ -55,6 +60,9 @@ async def main() -> None:
     omp_manager = None
     omp_task = None
     antigravity_client = AntigravityClient()
+    shared_chunks = await asyncio.to_thread(palace_memory.sync_shared_source)
+    imported = await asyncio.to_thread(palace_memory.migrate_legacy, config.STATE_DB_FILE, config.settings.owner_user_id)
+    logger.info("MemPalace initialized; shared context chunks=%d, migration counts: %s", shared_chunks, imported)
 
     if not await antigravity_client.check_omp_health():
         parsed = urlparse(config.settings.omp_base_url)
@@ -109,14 +117,18 @@ async def main() -> None:
         )
 
     # 6. Start update polling
+    for user_id in palace_memory.known_users():
+        palace_memory.schedule_analysis(
+            user_id, lambda system, text, uid=user_id: antigravity_client._memory_completion(uid, system, text),
+        )
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        await antigravity_client.aclose()
         if omp_manager:
             await omp_manager.aclose()
         if omp_task:
             omp_task.cancel()
-        await antigravity_client.aclose()
         await bot.session.close()
 
 

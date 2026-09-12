@@ -9,16 +9,51 @@ Allows Columbina to dynamically mirror and use the user's own custom emojis and 
 
 import logging
 import random
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.core import config
 from app.core.files import atomic_write_json, load_json
+from app.core.state import state_store
 
 logger = logging.getLogger("geminka-assets")
 
 USER_ASSETS_FILE = config.USER_ASSETS_FILE
+
+SYNONYMS_DICT: Dict[str, List[str]] = {
+    "обнимашки": ["обним", "объят", "ласк", "hug", "прижимает"],
+    "обнять": ["обним", "объят", "ласк", "hug", "прижимает"],
+    "объятия": ["обним", "объят", "ласк", "hug", "прижимает"],
+    "поцелуй": ["целу", "поцелу", "чмок", "kiss", "губ"],
+    "поцеловать": ["целу", "поцелу", "чмок", "kiss", "губ"],
+    "чмок": ["целу", "поцелу", "чмок", "kiss"],
+    "сон": ["сон", "спат", "подушк", "зева", "sleep", "посапывает", "устал"],
+    "спать": ["сон", "спат", "подушк", "зева", "sleep", "посапывает"],
+    "любовь": ["люб", "сердц", "нежност", "романтик", "love"],
+    "смех": ["смех", "рж", "лол", "кек", "улыбк", "хаха", "haha"],
+    "слезы": ["слез", "плач", "рыда", "груст", "тоск", "печал", "cry"],
+    "плачет": ["слез", "плач", "рыда", "груст", "тоск", "печал", "cry"],
+    "смущение": ["смущ", "красне", "румян", "blush", "неловк"],
+    "привет": ["привет", "здравствуй", "машет", "хай", "hello", "hi"],
+    "пока": ["пока", "проща", "bye"],
+    "злость": ["зл", "ярост", "гнев", "бесит", "angry"],
+    "шок": ["удивл", "шок", "глаза", "ого", "wow"],
+}
+
+
+def extract_stems(text: str) -> List[str]:
+    """Extracts search tokens, stems, and synonyms from a search query or tag."""
+    words = re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9]+", text.lower())
+    stems: List[str] = []
+    for w in words:
+        if len(w) >= 3:
+            if w in SYNONYMS_DICT:
+                stems.extend(SYNONYMS_DICT[w])
+            else:
+                stems.append(w[:5] if len(w) >= 5 else w)
+    return list(dict.fromkeys(stems))
 
 
 class AssetHarvester:
@@ -33,11 +68,15 @@ class AssetHarvester:
         }
         self.load()
 
+    @staticmethod
+    def _debug_mode(user_id: int) -> bool:
+        return state_store.is_debug_mode(user_id)
+
     def load(self) -> None:
         if self.storage_file.exists():
             try:
                 saved = load_json(self.storage_file, {})
-                for k in ["custom_emojis", "stickers", "sticker_packs", "user_preferences"]:
+                for k in ["custom_emojis", "stickers", "sticker_packs", "user_preferences", "recent_sent_stickers"]:
                     if k in saved:
                         self.data[k] = saved[k]
                 logger.info(
@@ -61,6 +100,8 @@ class AssetHarvester:
         set_name: Optional[str] = None,
     ) -> None:
         """Records a custom emoji sent by user."""
+        if self._debug_mode(user_id):
+            return
         cid = str(custom_emoji_id).strip()
         if not cid:
             return
@@ -100,13 +141,17 @@ class AssetHarvester:
         self,
         user_id: int,
         file_id: str,
+        file_unique_id: Optional[str] = None,
         emoji: str = "🌸",
         emoji_char: Optional[str] = None,
         set_name: Optional[str] = None,
         is_animated: bool = False,
         is_video: bool = False,
+        meta: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Records a sticker sent by user."""
+        """Records a sticker sent by user, preserving unique IDs and rich descriptions."""
+        if self._debug_mode(user_id):
+            return
         emoji_val = emoji_char or emoji or "🌸"
         fid = str(file_id).strip()
         if not fid:
@@ -116,9 +161,20 @@ class AssetHarvester:
         uid_str = str(user_id)
         pack_name = set_name or "unknown_pack"
 
-        if fid not in self.data["stickers"]:
-            self.data["stickers"][fid] = {
+        # Check if already in stickers by fid or file_unique_id
+        target_item = None
+        if fid in self.data["stickers"]:
+            target_item = self.data["stickers"][fid]
+        elif file_unique_id:
+            for item in self.data["stickers"].values():
+                if item.get("file_unique_id") == file_unique_id:
+                    target_item = item
+                    break
+
+        if target_item is None:
+            new_item = {
                 "file_id": fid,
+                "file_unique_id": file_unique_id,
                 "emoji": emoji_val,
                 "set_name": pack_name,
                 "is_animated": is_animated,
@@ -129,14 +185,31 @@ class AssetHarvester:
                 "users": [uid_str],
                 "tags": [emoji_val] if emoji_val else [],
             }
+            if meta:
+                if meta.get("description"):
+                    new_item["description"] = meta["description"]
+                if meta.get("tags"):
+                    for t in meta["tags"]:
+                        if t not in new_item["tags"]:
+                            new_item["tags"].append(t)
+            self.data["stickers"][fid] = new_item
         else:
-            item = self.data["stickers"][fid]
-            item["count"] = item.get("count", 0) + 1
-            item["last_used"] = now
-            if emoji_val and emoji_val not in item.get("tags", []):
-                item.setdefault("tags", []).append(emoji_val)
-            if uid_str not in item.get("users", []):
-                item.setdefault("users", []).append(uid_str)
+            target_item["count"] = target_item.get("count", 0) + 1
+            target_item["last_used"] = now
+            if file_unique_id and not target_item.get("file_unique_id"):
+                target_item["file_unique_id"] = file_unique_id
+            if meta and meta.get("description") and not target_item.get("description"):
+                target_item["description"] = meta["description"]
+            if meta and meta.get("tags"):
+                for t in meta["tags"]:
+                    if t not in target_item.setdefault("tags", []):
+                        target_item["tags"].append(t)
+            if emoji_val and emoji_val not in target_item.get("tags", []):
+                target_item.setdefault("tags", []).append(emoji_val)
+            if uid_str not in target_item.get("users", []):
+                target_item.setdefault("users", []).append(uid_str)
+            if fid not in self.data["stickers"]:
+                self.data["stickers"][fid] = target_item
 
         # Track pack info
         if pack_name:
@@ -181,6 +254,63 @@ class AssetHarvester:
         u_stickers.sort(key=lambda x: (x.get("count", 0), x.get("last_used", 0)), reverse=True)
         return u_stickers
 
+    def get_sticker_metadata(
+        self,
+        file_id: str,
+        file_unique_id: Optional[str] = None,
+        set_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves stored metadata (description, tags, etc.) for a sticker by file_id, file_unique_id, and/or set_name."""
+        # 1. First priority: search by permanent file_unique_id with description in user_assets
+        if file_unique_id:
+            for item in self.data.get("stickers", {}).values():
+                if item.get("file_unique_id") == file_unique_id and item.get("description"):
+                    return item
+
+        # 2. Search by file_id with description in user_assets
+        if file_id in self.data.get("stickers", {}):
+            item = self.data["stickers"][file_id]
+            if item.get("description"):
+                return item
+
+        # 3. Fallback to bot_stickers.json catalog (curated stickers)
+        bot_stickers_file = config.DATA_DIR / "bot_stickers.json"
+        if bot_stickers_file.exists():
+            try:
+                bot_stickers = load_json(bot_stickers_file, [])
+                if isinstance(bot_stickers, list):
+                    for bs in bot_stickers:
+                        if (file_unique_id and bs.get("file_unique_id") == file_unique_id) or bs.get("file_id") == file_id:
+                            if bs.get("description"):
+                                return bs
+            except Exception:
+                pass
+
+        # 4. Fallback to any item by file_unique_id even without description
+        if file_unique_id:
+            for item in self.data.get("stickers", {}).values():
+                if item.get("file_unique_id") == file_unique_id:
+                    return item
+
+        # 5. Direct file_id lookup
+        if file_id in self.data.get("stickers", {}):
+            return self.data["stickers"][file_id]
+
+        return None
+
+    def is_pack_in_db(self, set_name: str) -> bool:
+        """Checks if a sticker pack is already registered in database."""
+        if not set_name or set_name == "unknown":
+            return False
+        return set_name in self.data.get("sticker_packs", {})
+
+    def is_pack_fully_scanned(self, set_name: str) -> bool:
+        """Checks if a sticker pack is already ingested and has vision scan descriptions."""
+        if not set_name or set_name == "unknown":
+            return False
+        p_info = self.data.get("sticker_packs", {}).get(set_name, {})
+        return bool(p_info.get("fully_synced") and (p_info.get("scanned") or p_info.get("summary")))
+
     def format_emojis_prompt_context(self, user_id: int) -> str:
         """Formats the learned user custom emojis and sticker packs into prompt markup instructions."""
         emojis = self.get_user_custom_emojis(user_id, limit=12)
@@ -199,26 +329,52 @@ class AssetHarvester:
             blocks.append("\n".join(lines))
 
         if stickers:
-            pack_summary: Dict[str, List[str]] = {}
+            by_pack: Dict[str, List[Dict[str, Any]]] = {}
             for s in stickers:
                 p = s.get("set_name", "general")
-                em = s.get("emoji", "🌸")
-                if p not in pack_summary:
-                    pack_summary[p] = []
-                if em not in pack_summary[p]:
-                    pack_summary[p].append(em)
+                by_pack.setdefault(p, []).append(s)
 
-            st_lines = ["[Твоя коллекция стикеров из паков собеседника (подбирай подходящий по смыслу и контексту)]:"]
-            for p, em_list in list(pack_summary.items())[:6]:
-                em_str = " ".join(em_list[:12])
-                st_lines.append(f'• Пак `{p}`: эмодзи [{em_str}] -> тег `<tg-sticker pack="{p}" emoji="..."/>`')
-            st_lines.append("• ПРАВИЛО ПОДБОРА СТИКЕРОВ: не присылай вслепую в точности тот же стикер, что прислал пользователь! Подбирай подходящий, дополняющий по смыслу и остроумный стикер из этой коллекции.")
+            st_lines = [
+                "[База знаний стикеров из JSON-каталога (анализируй описания каждого стикера и выбирай наиболее подходящий по смыслу и контексту)]:",
+                "• ПРАВИЛО ВЫБОРА: при каждой отправке стикера сопоставляй контекст диалога с описанием каждого стикера (description) и тегами (tags), выбирая самый остроумный и точный стикер из всех доступных паков, указывая тег `<tg-sticker pack=\"...\" tag=\"...\"/>` или `<tg-sticker tag=\"...\"/>`!",
+                "• СТРОГО НЕ отправляй в точности тот же стикер, что прислал пользователь.",
+            ]
+
+            # Sort packs: packs with descriptions first, then by count
+            sorted_packs = sorted(
+                by_pack.items(),
+                key=lambda item: (sum(1 for s in item[1] if s.get("description")), len(item[1])),
+                reverse=True,
+            )
+
+            for p_name, s_list in sorted_packs:
+                p_info = self.data.get("sticker_packs", {}).get(p_name, {})
+                p_title = p_info.get("title", p_name)
+                p_summary = p_info.get("summary") or p_info.get("description", "")
+                summary_short = f" — {p_summary[:85]}..." if p_summary else ""
+
+                with_desc = [s for s in s_list if s.get("description")]
+                if with_desc:
+                    st_lines.append(f"\n📦 **Пак «{p_title}» (`{p_name}`)** ({len(with_desc)} описанных стикеров){summary_short}:")
+                    for s in with_desc:
+                        em = s.get("emoji", "✨")
+                        desc = s.get("description", "")
+                        tags = s.get("tags") or [em]
+                        first_tag = tags[0]
+                        st_lines.append(f"  • [{em}] {desc} -> `<tg-sticker pack=\"{p_name}\" tag=\"{first_tag}\"/>`")
+                else:
+                    em_list = list(dict.fromkeys([s.get("emoji", "✨") for s in s_list]))[:15]
+                    em_str = " ".join(em_list)
+                    st_lines.append(f"\n📦 **Пак «{p_title}» (`{p_name}`)** ({len(s_list)} стикеров): эмодзи [{em_str}] -> `<tg-sticker pack=\"{p_name}\" emoji=\"...\"/>`")
+
             blocks.append("\n".join(st_lines))
 
         return "\n\n".join(blocks)
 
     def record_sent_sticker(self, user_id: int, file_id: str) -> None:
         """Records a sticker sent by the bot for recency and frequency penalty tracking."""
+        if self._debug_mode(user_id):
+            return
         uid_str = str(user_id)
         recent = self.data.setdefault("recent_sent_stickers", {}).setdefault(uid_str, [])
         recent.append(file_id)
@@ -239,6 +395,8 @@ class AssetHarvester:
         set_name: str,
     ) -> None:
         """Fetches all stickers in the pack via Telegram Bot API get_sticker_set and saves them to JSON."""
+        if self._debug_mode(user_id):
+            return
         if not set_name or set_name == "unknown":
             return
 
@@ -248,14 +406,18 @@ class AssetHarvester:
 
         try:
             sticker_set = await bot.get_sticker_set(set_name)
+            if self._debug_mode(user_id):
+                return
             uid_str = str(user_id)
             now = time.time()
             for s in sticker_set.stickers:
                 fid = s.file_id
+                s_uid = getattr(s, "file_unique_id", None)
                 emoji_val = s.emoji or "✨"
                 if fid not in self.data["stickers"]:
                     self.data["stickers"][fid] = {
                         "file_id": fid,
+                        "file_unique_id": s_uid,
                         "emoji": emoji_val,
                         "set_name": set_name,
                         "is_animated": s.is_animated,
@@ -268,6 +430,8 @@ class AssetHarvester:
                     }
                 else:
                     item = self.data["stickers"][fid]
+                    if s_uid and not item.get("file_unique_id"):
+                        item["file_unique_id"] = s_uid
                     if uid_str not in item.get("users", []):
                         item.setdefault("users", []).append(uid_str)
                     if emoji_val and emoji_val not in item.get("tags", []):
@@ -290,6 +454,57 @@ class AssetHarvester:
         except Exception as e:
             logger.warning(f"Failed to ingest full sticker pack '{set_name}': {e}")
 
+    def calculate_sticker_score(
+        self,
+        s: Dict[str, Any],
+        tag: Optional[str],
+        emoji: Optional[str],
+        pack: Optional[str],
+    ) -> float:
+        """Calculates semantic match score between search criteria and a sticker in JSON."""
+        score = 0.0
+        s_pack = s.get("set_name", "").lower()
+        s_emoji = s.get("emoji", "")
+        desc = s.get("description", "").lower()
+        tags = [str(t).lower() for t in s.get("tags", [])]
+
+        pack_match = bool(pack and pack.lower() in s_pack)
+
+        # 1. Emoji match
+        if emoji and s_emoji == emoji:
+            score += 80.0
+
+        # 2. Tag / Description / Semantic match
+        if tag:
+            t_low = tag.lower().strip()
+            # Exact tag match
+            if t_low in tags:
+                score += 120.0
+            # Substring in any tag
+            elif any(t_low in t for t in tags):
+                score += 80.0
+
+            # Substring in description
+            if t_low in desc:
+                score += 70.0
+
+            # Stems and synonyms match
+            stems = extract_stems(t_low)
+            for st in stems:
+                if any(st in t for t in tags):
+                    score += 50.0
+                if st in desc:
+                    score += 45.0
+
+        # Pack bonus: boosts score if sticker is in the requested pack
+        if pack_match:
+            if score > 0:
+                score += 40.0
+            elif not tag and not emoji:
+                score += 20.0
+
+        return score
+
     def find_best_matching_sticker(
         self,
         user_id: int,
@@ -297,49 +512,64 @@ class AssetHarvester:
         emoji: Optional[str] = None,
         pack: Optional[str] = None,
     ) -> Optional[str]:
-        """Finds the best matching sticker file_id from the user's collected stickers with a 50% penalty per recent usage."""
+        """Finds the best matching sticker file_id from user's stickers or global database using semantic scoring and recency penalty."""
         stickers = self.get_user_stickers(user_id)
+        if not stickers:
+            stickers = list(self.data.get("stickers", {}).values())
         if not stickers:
             return None
 
-        candidates = []
-        # Priority 1: Match by emoji + pack
-        if emoji and pack:
-            candidates = [
-                s for s in stickers
-                if s.get("emoji") == emoji and pack.lower() in s.get("set_name", "").lower()
-            ]
+        # 1. If pack specified, score within requested pack first
+        scored_stickers: List[Tuple[float, Dict[str, Any]]] = []
+        if pack:
+            pack_stickers = [s for s in stickers if pack.lower() in s.get("set_name", "").lower()]
+            for s in pack_stickers:
+                sc = self.calculate_sticker_score(s, tag=tag, emoji=emoji, pack=pack)
+                if sc > 0:
+                    scored_stickers.append((sc, s))
 
-        # Priority 2: Match by emoji only
-        if not candidates and emoji:
-            candidates = [s for s in stickers if s.get("emoji") == emoji]
+        # 2. If no pack specified or no match in requested pack, search across all user stickers
+        if not scored_stickers:
+            for s in stickers:
+                sc = self.calculate_sticker_score(s, tag=tag, emoji=emoji, pack=pack)
+                if sc > 0:
+                    scored_stickers.append((sc, s))
 
-        # Priority 3: Match by pack only
-        if not candidates and pack:
-            candidates = [s for s in stickers if pack.lower() in s.get("set_name", "").lower()]
+        # 3. Fallback to all database stickers if criteria requested but not found in user stickers
+        if not scored_stickers and (tag or emoji or pack):
+            all_stickers = list(self.data.get("stickers", {}).values())
+            for s in all_stickers:
+                sc = self.calculate_sticker_score(s, tag=tag, emoji=emoji, pack=pack)
+                if sc > 0:
+                    scored_stickers.append((sc, s))
 
-        # Priority 4: Match by tag in tags / set_name
-        if not candidates and tag:
-            t_low = tag.lower().strip()
-            candidates = [
-                s for s in stickers
-                if any(t_low in str(x).lower() for x in s.get("tags", [])) or t_low in s.get("set_name", "").lower()
-            ]
-
-        # Priority 5: Fallback to all user stickers only if no specific criteria were requested
-        if not candidates:
-            if tag or emoji or pack:
+        if scored_stickers:
+            scored_stickers.sort(key=lambda x: x[0], reverse=True)
+            top_score = scored_stickers[0][0]
+            # Take top candidates (score >= 60% of top score)
+            threshold = max(30.0, top_score * 0.6)
+            candidates = [s for sc, s in scored_stickers if sc >= threshold]
+        else:
+            if tag or emoji:
                 return None
-            candidates = stickers
+            if pack:
+                candidates = [s for s in stickers if pack.lower() in s.get("set_name", "").lower()]
+            else:
+                candidates = stickers
+
+        if not candidates:
+            return None
 
         recent_history = self.get_recent_sent_stickers(user_id, limit=20)
 
-        # Calculate weights for each candidate: 50% penalty per usage in last 20 messages (w = 1.0 * (0.5 ** count))
+        # Calculate weights: candidate match score combined with 50% penalty per usage in last 20 messages
         weights = []
         for s in candidates:
             fid = s["file_id"]
             recent_count = recent_history.count(fid)
-            w = 1.0 * (0.5 ** recent_count)
+            sc = self.calculate_sticker_score(s, tag=tag, emoji=emoji, pack=pack)
+            base_w = max(1.0, sc)
+            w = base_w * (0.5 ** recent_count)
             weights.append(w)
 
         chosen = random.choices(candidates, weights=weights, k=1)[0]

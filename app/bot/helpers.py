@@ -114,7 +114,9 @@ def read_text_file_preview(path: Path, max_bytes: int = 65_536) -> str | None:
         return None
 
 
-async def inspect_custom_emojis(message: types.Message, bot: Bot) -> list[dict[str, object]]:
+async def inspect_custom_emojis(
+    message: types.Message, bot: Bot, *, persist: bool = True
+) -> list[dict[str, object]]:
     entities = [*(message.entities or []), *(message.caption_entities or [])]
     custom_ids = [entity.custom_emoji_id for entity in entities if entity.custom_emoji_id]
     if not custom_ids:
@@ -126,13 +128,14 @@ async def inspect_custom_emojis(message: types.Message, bot: Bot) -> list[dict[s
         return []
     discovered = []
     for sticker in stickers:
-        asset_harvester.register_custom_emoji(
-            user_id=message.from_user.id,
-            custom_emoji_id=sticker.custom_emoji_id,
-            emoji_char=sticker.emoji or "✨",
-            set_name=sticker.set_name,
-        )
-        if sticker.set_name and sticker.set_name != "unknown":
+        if persist:
+            asset_harvester.register_custom_emoji(
+                user_id=message.from_user.id,
+                custom_emoji_id=sticker.custom_emoji_id,
+                emoji_char=sticker.emoji or "✨",
+                set_name=sticker.set_name,
+            )
+        if persist and sticker.set_name and sticker.set_name != "unknown":
             asyncio.create_task(
                 sticker_scanner.scan_sticker_pack(
                     bot,
@@ -150,11 +153,15 @@ async def inspect_custom_emojis(message: types.Message, bot: Bot) -> list[dict[s
     return discovered
 
 
-async def _document_context(bot: Bot, document: types.Document) -> str:
+async def _document_context(
+    bot: Bot, document: types.Document, *, persist: bool = True
+) -> str:
     filename = document.file_name or "document"
     suffix = Path(filename).suffix.lower()
     if suffix not in TEXT_EXTENSIONS:
         return f"[Документ {filename}; бинарное содержимое не передано модели]"
+    if not persist:
+        return f"[Текстовый документ {filename}; содержимое не сохраняется в debug-режиме]"
     path: Path | None = None
     try:
         path = await download_telegram_file(bot, document.file_id, filename)
@@ -170,9 +177,11 @@ async def _document_context(bot: Bot, document: types.Document) -> str:
             path.unlink(missing_ok=True)
 
 
-async def extract_message_context(message: types.Message, bot: Bot) -> str:
+async def extract_message_context(
+    message: types.Message, bot: Bot, *, persist: bool = True
+) -> str:
     parts: list[str] = []
-    custom_emojis = await inspect_custom_emojis(message, bot)
+    custom_emojis = await inspect_custom_emojis(message, bot, persist=persist)
     if custom_emojis:
         ids = ", ".join(str(item["custom_emoji_id"]) for item in custom_emojis)
         parts.append(f"[Использованы кастомные эмодзи: {ids}]")
@@ -192,33 +201,58 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
                 parts.append(f"[В цитате GIF/видеофайл: {original.document.file_name or 'animation.gif'}]")
             else:
                 try:
-                    parts.append(await _document_context(bot, original.document))
+                    parts.append(await _document_context(bot, original.document, persist=persist))
                 except (TelegramAPIError, OSError, ValueError) as exc:
                     parts.append(f"[Вложение в цитате недоступно: {exc}]")
         elif original.photo:
-            try:
-                photo_path = await cache_photo_file(bot, original.photo[-1])
-                parts.append(f"[В цитате есть фото; локальный файл в кэше: {photo_path}]")
-            except Exception as exc:
-                logger.warning("Failed to cache quoted photo: %s", exc)
-                parts.append("[В цитате есть фото]")
+            if persist:
+                try:
+                    photo_path = await cache_photo_file(bot, original.photo[-1])
+                    parts.append(f"[В цитате есть фото; локальный файл в кэше: {photo_path}]")
+                except Exception as exc:
+                    logger.warning("Failed to cache quoted photo: %s", exc)
+                    parts.append("[В цитате есть фото]")
+            else:
+                parts.append("[В цитате есть фото; файл не сохраняется в debug-режиме]")
         elif original.sticker:
-            try:
-                stk_path = await cache_sticker_file(bot, original.sticker)
+            set_name = original.sticker.set_name or "unknown"
+            fid = original.sticker.file_id
+            uid = original.sticker.file_unique_id
+            meta = asset_harvester.get_sticker_metadata(fid, uid, set_name=set_name)
+            local_png = config.STICKERS_CACHE_DIR / f"{uid}.png"
+            cache_str = f"; локальный файл в кэше: {local_png.resolve()}" if local_png.exists() else ""
+
+            if meta and meta.get("description"):
+                desc_val = meta["description"]
+                tags_val = ", ".join(meta.get("tags", []))
                 parts.append(
-                    f"[В цитате стикер: {original.sticker.emoji}; пак: {original.sticker.set_name or 'unknown'}; локальный файл в кэше: {stk_path}]"
+                    f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; описание: «{desc_val}»; теги: [{tags_val}]{cache_str}]"
                 )
-            except Exception as exc:
-                logger.warning("Failed to cache quoted sticker: %s", exc)
-                parts.append(f"[В цитате стикер: {original.sticker.emoji}; пак: {original.sticker.set_name or 'unknown'}]")
+            else:
+                if persist:
+                    try:
+                        stk_path = await cache_sticker_file(bot, original.sticker)
+                        parts.append(
+                            f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; локальный файл в кэше: {stk_path}]"
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to cache quoted sticker: %s", exc)
+                        parts.append(f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}]")
+                else:
+                    parts.append(
+                        f"[В цитате стикер: {original.sticker.emoji}; пак: {set_name}; файл не сохраняется в debug-режиме]"
+                    )
 
     if message.photo:
-        try:
-            photo_path = await cache_photo_file(bot, message.photo[-1])
-            parts.append(f"[Пользователь прислал фото; локальный файл в кэше: {photo_path}]")
-        except Exception as exc:
-            logger.warning("Failed to cache photo: %s", exc)
-            parts.append("[Пользователь прислал фото]")
+        if persist:
+            try:
+                photo_path = await cache_photo_file(bot, message.photo[-1])
+                parts.append(f"[Пользователь прислал фото; локальный файл в кэше: {photo_path}]")
+            except Exception as exc:
+                logger.warning("Failed to cache photo: %s", exc)
+                parts.append("[Пользователь прислал фото]")
+        else:
+            parts.append("[Пользователь прислал фото; файл не сохраняется в debug-режиме]")
     elif message.animation:
         anim_name = message.animation.file_name or "animation.gif"
         parts.append(f"[Пользователь прислал GIF-анимацию: {anim_name}]")
@@ -230,43 +264,76 @@ async def extract_message_context(message: types.Message, bot: Bot) -> str:
             parts.append(f"[Пользователь прислал GIF/видеофайл: {message.document.file_name or 'animation.gif'}]")
         else:
             try:
-                parts.append(await _document_context(bot, message.document))
+                parts.append(await _document_context(bot, message.document, persist=persist))
             except (TelegramAPIError, OSError, ValueError) as exc:
                 parts.append(f"[Документ недоступен: {exc}]")
     elif message.sticker:
-        asset_harvester.register_sticker(
-            user_id=message.from_user.id,
-            file_id=message.sticker.file_id,
-            emoji_char=message.sticker.emoji or "✨",
-            set_name=message.sticker.set_name or "unknown",
-            is_animated=message.sticker.is_animated,
-            is_video=message.sticker.is_video,
-        )
-        if message.sticker.set_name and message.sticker.set_name != "unknown":
-            asyncio.create_task(
-                asset_harvester.ingest_full_sticker_pack(
-                    bot,
-                    message.from_user.id,
-                    message.sticker.set_name,
-                )
+        stk = message.sticker
+        set_name = stk.set_name or "unknown"
+        fid = stk.file_id
+        uid = stk.file_unique_id
+
+        # 1. СТРОГАЯ ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА: ищем стикер и пак в базе
+        meta = asset_harvester.get_sticker_metadata(fid, uid, set_name=set_name)
+        pack_scanned = asset_harvester.is_pack_fully_scanned(set_name) if set_name else False
+        pack_in_db = asset_harvester.is_pack_in_db(set_name) if set_name else False
+
+        if persist:
+            # Регистрируем использование в профиле пользователя (с сохранением уникального ID и описания)
+            asset_harvester.register_sticker(
+                user_id=message.from_user.id,
+                file_id=fid,
+                file_unique_id=uid,
+                emoji_char=stk.emoji or "✨",
+                set_name=set_name,
+                is_animated=stk.is_animated,
+                is_video=stk.is_video,
+                meta=meta,
             )
-            asyncio.create_task(
-                sticker_scanner.scan_sticker_pack(
-                    bot,
-                    message.sticker.set_name,
-                    message.from_user.id,
-                )
-            )
-        try:
-            stk_path = await cache_sticker_file(bot, message.sticker)
+
+        local_png = config.STICKERS_CACHE_DIR / f"{uid}.png"
+        cache_str = f"; локальный файл в кэше: {local_png.resolve()}" if local_png.exists() else ""
+
+        # 2. ЕСЛИ СТИКЕР УЖЕ ЕСТЬ В БАЗЕ С ОПИСАНИЕМ -> ПРОПУСКАЕМ ЭТАПЫ 2 И 3 ПОЛНОСТЬЮ!
+        if meta and meta.get("description"):
+            desc_val = meta["description"]
+            tags_val = ", ".join(meta.get("tags", []))
             parts.append(
-                f"[Стикер: {message.sticker.emoji}; пак: {message.sticker.set_name or 'unknown'}; локальный файл в кэше: {stk_path}]"
+                f"[Стикер: {stk.emoji}; пак: {set_name}; описание: «{desc_val}»; теги: [{tags_val}]{cache_str}]"
             )
-        except Exception as exc:
-            logger.warning("Failed to cache sticker: %s", exc)
+        elif not persist:
             parts.append(
-                f"[Стикер: {message.sticker.emoji}; пак: {message.sticker.set_name or 'unknown'}]"
+                f"[Стикер: {stk.emoji}; пак: {set_name}; файл и профиль не сохраняются в debug-режиме]"
             )
+        else:
+            # 3. ТОЛЬКО ЕСЛИ СТИКЕРА НЕТ В БАЗЕ -> скачиваем и при необходимости запускаем фоновое сканирование пака
+            if set_name and set_name != "unknown" and not pack_scanned:
+                if not pack_in_db:
+                    asyncio.create_task(
+                        asset_harvester.ingest_full_sticker_pack(
+                            bot,
+                            message.from_user.id,
+                            set_name,
+                        )
+                    )
+                asyncio.create_task(
+                    sticker_scanner.scan_sticker_pack(
+                        bot,
+                        set_name,
+                        message.from_user.id,
+                    )
+                )
+
+            try:
+                stk_path = await cache_sticker_file(bot, stk)
+                parts.append(
+                    f"[Стикер: {stk.emoji}; пак: {set_name}; локальный файл в кэше: {stk_path}]"
+                )
+            except Exception as exc:
+                logger.warning("Failed to cache sticker: %s", exc)
+                parts.append(
+                    f"[Стикер: {stk.emoji}; пак: {set_name}]"
+                )
 
     if text := (message.text or message.caption or "").strip():
         parts.append(text)

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from app.core import config
 from app.core.state import StateStore, state_store
+from app.services.palace_memory import palace_memory
 
 logger = logging.getLogger(__name__)
 
@@ -120,4 +121,4 @@ class RAGMemoryEngine:
         return self.format_memory_context(user_id)
 
 
-rag_engine = RAGMemoryEngine()
+rag_engine = palace_memory

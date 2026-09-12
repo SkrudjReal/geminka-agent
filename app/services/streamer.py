@@ -20,6 +20,7 @@ import logging
 import random
 import re
 import time
+from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional
 
 from aiogram import Bot
@@ -277,7 +278,10 @@ def md_to_telegram_html(md: str) -> str:
 
     md = re.sub(r"<tg-emoji\s+emoji-id=[\"'](\d+)[\"']>([\s\S]*?)</tg-emoji>", save_tg_emoji, md, flags=re.IGNORECASE)
 
-    # 4. Escape general HTML entities
+    # 4. Convert markdown bullet lists (* item, - item) to bullet symbol • item
+    md = re.sub(r"^(\s*)[\*\-]\s+", r"\1• ", md, flags=re.MULTILINE)
+
+    # 5. Escape general HTML entities
     md = html.escape(md)
 
     # 5. Convert Blockquotes (> Quote)

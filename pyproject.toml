@@ -15,6 +15,7 @@ dependencies = [
     "pillow>=10.2.0",
     "pydantic>=2.10.0",
     "python-dotenv>=1.0.1",
+    "mempalace @ git+https://github.com/MemPalace/mempalace.git@5a2abffe575b9706be376dde383396555c1121ff",
 ]
 
 [tool.uv]

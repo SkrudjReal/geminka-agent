@@ -1,7 +1,7 @@
 ---
 name: telegram-premium-emoji
-description: "Use Scrooge's current Telegram premium/custom emoji pack, HTML formatting, emotional intelligence, reactions, and sticker rules in replies."
-version: 2.7.0
+description: "Dynamic JSON sticker selection across all packs by description, custom emoji mirroring, HTML formatting, emotional intelligence, reactions, and sticker rules in replies."
+version: 2.8.0
 author: Geminka Agent
 license: MIT
 platforms: [linux, wsl, telegram]
@@ -53,9 +53,13 @@ This skill defines the core behavioral, psychological, and Telegram interaction 
 - **Не реплаить на каждое сообщение подряд!**
 - Используй тег `<tg-reply/>` только по реальной необходимости (ответ на конкретный вопрос, разбор прикрепленного файла, фото или кода, точечный комментарий).
 
-## 7. Intuitive Sticker Sending (`<tg-sticker tag="..."/>`)
+## 7. Intuitive Sticker Sending (`<tg-sticker pack="..." tag="..." emoji="..."/>`)
 
 - **Шестое чувство и мера:** НЕ отправляй стикер в каждом сообщении! Стикер — редкий эмоциональный акцент (примерно 1 раз на 3–4 сообщения).
+- **Динамический анализ всей базы стикеров по JSON:** При каждой отправке стикера бот загружает и сопоставляет контекст диалога с полным списком стикеров из JSON (`user_assets.json` и `bot_stickers.json`). Сравнивай контекст текущей реплики и настроение с описанием каждого стикера (`description`), эмодзи и тегами (`tags`), выбирая самый остроумный, эмоционально точный и дополняющий стикер из всех сохранённых паков (`<tg-sticker pack="..." tag="..."/>` или `<tg-sticker tag="..."/>`), а не ограничиваясь одним паком!
+- **Формат вызова:** Используй `<tg-sticker pack="..." tag="..."/>`, `<tg-sticker tag="..."/>` или `<tg-sticker emoji="..."/>`.
+- **Запрет слепого копирования:** Строго запрещено отправлять тот же самый стикер, что прислал собеседник.
+- **Разнообразие и штраф за повторы:** Система отслеживает историю последних 20 сообщений со штрафом 50% к вероятности повторного выбора, поэтому постоянно исследуй и ротируй разные подходящие стикеры из всех доступных паков.
 
 ## 8. Premium Custom Emoji Markup
 
@@ -106,8 +110,12 @@ This skill defines the core behavioral, psychological, and Telegram interaction 
     <blockquote expandable>Expandable block quotation started
     Expandable block quotation continued
     Expandable block quotation continued
-    Hidden by default part of the block quotation started
     Expandable block quotation continued
     The last line of the block quotation</blockquote>
     ```
 
+## 10. Bullet & List Formatting Rules (Символ `•` вместо `*`)
+
+- **Маркеры списков:** В любых списках, перечислениях и буллетах **СТРОГО ЗАПРЕЩЕНО** использовать звёздочки `*` (например, `* пункт`).
+- ВСЕГДА отправляй аккуратный символ `•` вместо `*` (например: `• пункт 1`, `• пункт 2`).
+- Для жирного текста и курсива используй нативные HTML-теги `<b>` и `<i>`, а не звёздочки.
