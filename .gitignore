@@ -34,6 +34,7 @@ ENV/
 bot.log
 
 # User Runtime Data & Sessions
+memory/
 data/*
 !data/*.example.json
 !data/bot_stickers.json
