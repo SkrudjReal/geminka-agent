@@ -22,6 +22,16 @@ logger = logging.getLogger("geminka-assets")
 
 USER_ASSETS_FILE = config.USER_ASSETS_FILE
 
+
+def load_default_emojis() -> List[Dict[str, Any]]:
+    """Load the tracked built-in Premium Emoji catalog."""
+    catalog = load_json(config.DEFAULT_EMOJIS_FILE, [])
+    if isinstance(catalog, dict):
+        catalog = catalog.get("emojis", [])
+    if not isinstance(catalog, list):
+        return []
+    return [item for item in catalog if isinstance(item, dict) and item.get("custom_emoji_id")]
+
 SYNONYMS_DICT: Dict[str, List[str]] = {
     "обнимашки": ["обним", "объят", "ласк", "hug", "прижимает"],
     "обнять": ["обним", "объят", "ласк", "hug", "прижимает"],
@@ -360,11 +370,32 @@ class AssetHarvester:
         return bool(p_info.get("fully_synced") and (p_info.get("scanned") or p_info.get("summary")))
 
     def format_emojis_prompt_context(self, user_id: int) -> str:
-        """Formats the learned user custom emojis and sticker packs into prompt markup instructions."""
+        """Formats built-in/user emoji and sticker catalogs into prompt markup instructions."""
+        default_emojis = load_default_emojis()
         emojis = self.get_user_custom_emojis(user_id, limit=12)
         stickers = self.get_user_stickers(user_id)
 
         blocks = []
+        if default_emojis:
+            lines = [
+                "[Дефолтные Telegram Premium Emoji Geminka из пака "
+                "columbina_emoji_by_geminka (используй их по умолчанию)]:",
+                "• Выбирай emoji-id по смыслу текущей реплики, description и tags; "
+                "вставляй эмодзи там, где они усиливают эмоцию, а не после каждого предложения.",
+            ]
+            for item in default_emojis:
+                cid = item["custom_emoji_id"]
+                char = item.get("emoji", "✨")
+                desc = item.get("description", "").strip()
+                tags = ", ".join(str(tag) for tag in item.get("tags", []) if tag)
+                details = "; ".join(part for part in (desc, f"теги: {tags}" if tags else "") if part)
+                lines.append(f'• `<tg-emoji emoji-id="{cid}">{char}</tg-emoji>` — {details}')
+            lines.append(
+                "• ПРАВИЛО: этот встроенный набор имеет приоритет над обычными Unicode-эмодзи "
+                "и старыми статическими emoji-id из инструкций; не выдумывай ID."
+            )
+            blocks.append("\n".join(lines))
+
         if emojis:
             lines = ["[Кастомные Telegram Premium эмодзи собеседника (используй их в ответах для отзеркаливания)]:"]
             for item in emojis:

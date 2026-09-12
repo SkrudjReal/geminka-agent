@@ -43,6 +43,7 @@ data/*
 !data/user_assets.json
 !data/bot_stickers.example.json
 !data/default_stickers.json
+!data/default_emojis.json
 memories/*
 !memories/*.md
 !memories/*.json

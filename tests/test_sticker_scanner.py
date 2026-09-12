@@ -255,6 +255,29 @@ def test_harvester_includes_built_in_stickers(tmp_path: Path, monkeypatch):
     )
 
 
+def test_harvester_formats_built_in_emojis_by_description(tmp_path: Path, monkeypatch):
+    assets_file = tmp_path / "user_assets.json"
+    default_file = tmp_path / "default_emojis.json"
+    assets_file.write_text(json.dumps({"custom_emojis": {}, "stickers": {}, "sticker_packs": {}}), encoding="utf-8")
+    default_file.write_text(json.dumps({
+        "pack_name": "columbina_emoji_by_geminka",
+        "emojis": [{
+            "custom_emoji_id": "5274209930998491315",
+            "emoji": "😴",
+            "description": "Коломбина сладко спит и просит говорить тише.",
+            "tags": ["сон", "уют"],
+        }],
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(config, "DEFAULT_EMOJIS_FILE", default_file)
+
+    context = AssetHarvester(assets_file).format_emojis_prompt_context(123)
+
+    assert "columbina_emoji_by_geminka" in context
+    assert 'emoji-id="5274209930998491315"' in context
+    assert "Коломбина сладко спит" in context
+    assert "теги: сон, уют" in context
+
+
 def test_save_scan_results_populates_empty_bot_catalog(tmp_path: Path):
     assets_file = tmp_path / "user_assets.json"
     bot_stickers_file = tmp_path / "bot_stickers.json"
