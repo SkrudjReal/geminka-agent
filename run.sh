@@ -2,10 +2,6 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/runtime/antigravity.sh
-source "$SCRIPT_DIR/scripts/runtime/antigravity.sh"
-# shellcheck source=scripts/runtime/gateway.sh
-source "$SCRIPT_DIR/scripts/runtime/gateway.sh"
 cd "$SCRIPT_DIR"
 
 echo "================================================================="
@@ -15,8 +11,6 @@ echo "================================================================="
 cleanup() {
     echo ""
     echo "🛑 Остановка Geminka..."
-    stop_omp_gateway
-    stop_antigravity_runtime
 }
 
 trap cleanup EXIT
@@ -57,12 +51,7 @@ else
     pip install -q -e .
 fi
 
-# --- 2. Gateway build ---
-GATEWAY_DIR="$SCRIPT_DIR/tools/open-antigravity"
-GATEWAY_DIST="$GATEWAY_DIR/dist/index.js"
-build_omp_gateway "$GATEWAY_DIR" "$GATEWAY_DIST"
-
-# --- 3. Interactive configuration ---
+# --- 2. Interactive configuration ---
 ENV_FILE="$SCRIPT_DIR/.env"
 ENV_EXAMPLE="$SCRIPT_DIR/.env.example"
 
@@ -126,8 +115,11 @@ if [ -z "$CURRENT_USERS" ] || [ "$CURRENT_USERS" = "123456789" ]; then
     fi
 fi
 
-if [ -z "$(get_env_val "OMP_BASE_URL")" ]; then
-    set_env_val "OMP_BASE_URL" "http://127.0.0.1:4000/v1"
+if [ -z "$(get_env_val "AGY_TRANSPORT")" ]; then
+    set_env_val "AGY_TRANSPORT" "agy"
+fi
+if [ -z "$(get_env_val "AGY_CLI_PATH")" ]; then
+    set_env_val "AGY_CLI_PATH" "agy"
 fi
 if [ -z "$(get_env_val "DEFAULT_MODEL")" ]; then
     set_env_val "DEFAULT_MODEL" "google-antigravity/gemini-3.7-flash"
@@ -139,19 +131,7 @@ if [ -z "$(get_env_val "MAX_OUTPUT_TOKENS")" ]; then
     set_env_val "MAX_OUTPUT_TOKENS" "8192"
 fi
 
-# --- 4. Antigravity and OMP Gateway ---
-OMP_URL=$(get_env_val "OMP_BASE_URL")
-[ -z "$OMP_URL" ] && OMP_URL="http://127.0.0.1:4000/v1"
-
-if is_local_omp_url "$OMP_URL"; then
-    ensure_antigravity_server "$SCRIPT_DIR"
-fi
-
-echo ""
-echo "🔍 Проверка подключения к OMP Gateway ($OMP_URL)..."
-ensure_omp_gateway "$GATEWAY_DIST" "$OMP_URL"
-
-# --- 5. Systemd Service Deployment & Launch ---
+# --- 3. Systemd Service Deployment & Launch ---
 SERVICE_NAME="geminka.service"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SERVICE_FILE="$SYSTEMD_USER_DIR/$SERVICE_NAME"

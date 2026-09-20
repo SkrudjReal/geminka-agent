@@ -83,6 +83,7 @@ class Settings:
     allowed_users: tuple[int, ...]
     allow_all_users: bool
     owner_user_id: int | None
+    transport: str
     omp_base_url: str
     omp_api_key: str
     default_model: str
@@ -106,6 +107,12 @@ class Settings:
         else:
             owner_user_id = allowed_users[0] if allowed_users else None
 
+        transport = source.get("AGY_TRANSPORT", "agy").strip().lower()
+        if transport == "cli":
+            transport = "agy"
+        if transport not in {"agy", "omp"}:
+            raise ConfigurationError("AGY_TRANSPORT must be agy or omp")
+
         reasoning = source.get("REASONING_EFFORT", "high").strip().lower()
         if reasoning not in {"low", "medium", "high"}:
             raise ConfigurationError("REASONING_EFFORT must be low, medium, or high")
@@ -123,6 +130,7 @@ class Settings:
                 name="TELEGRAM_ALLOW_ALL_USERS",
             ),
             owner_user_id=owner_user_id,
+            transport=transport,
             omp_base_url=base_url,
             omp_api_key=source.get("OMP_API_KEY", "").strip(),
             default_model=normalize_model_name(

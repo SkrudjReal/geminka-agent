@@ -1,19 +1,19 @@
 ---
 name: geminka-agent
-description: "Comprehensive guide to Geminka Agent (Columbina): architecture, OMP gateway, emotional engine, Telegram streaming, memory, skills, and configuration."
+description: "Comprehensive guide to Geminka Agent (Columbina): architecture, direct agy CLI transport, emotional engine, Telegram streaming, memory, skills, and configuration."
 version: 1.0.0
 author: Geminka Team
 license: MIT
 platforms: [linux, wsl, telegram]
 metadata:
   geminka:
-    tags: [geminka, columbina, telegram-bot, antigravity, omp-gateway, emotional-engine, streaming, rag, memory, rp, persona]
+    tags: [geminka, columbina, telegram-bot, agy, emotional-engine, streaming, rag, memory, rp, persona]
     related_skills: [telegram-premium-emoji, telegram-topic-manager, hermes-antigravity-pipeline]
 ---
 
 # Geminka Agent (Columbina)
 
-**Geminka Agent** is an open-source, highly responsive autonomous AI agent and personal companion persona (**Columbina**) engineered for Telegram. It runs on top of the **Google Antigravity & OMP (Open Model Protocol) Gateway** ecosystem with real-time SSE streaming, persistent long-term memory (SQLite RAG), dynamic emotional intelligence, communication style mirroring, and Telegram forum topic routing.
+**Geminka Agent** is an open-source, highly responsive autonomous AI agent and personal companion persona (**Columbina**) engineered for Telegram. It runs on the authenticated **agy CLI** with persistent `stream-json` sessions, bounded streaming, long-term memory, dynamic emotional intelligence, communication style mirroring, and Telegram forum topic routing.
 
 ---
 
@@ -21,7 +21,7 @@ metadata:
 
 What makes Geminka unique:
 
-- **Google Antigravity & OMP Gateway Backbone:** Communicates directly with local Antigravity Connect SSE proxy (`http://127.0.0.1:4000/v1`), supporting advanced models like `google-antigravity/gemini-3.7-flash`, `google-antigravity/claude-sonnet-4-5`, and `google-antigravity/claude-opus-4-6` with fine-grained `reasoning_effort` control (`low`, `medium`, `high`).
+- **Direct agy Backbone:** Keeps one authenticated `agy` CLI `stream-json` session per Telegram user, supporting Gemini Flash and Claude models with fine-grained reasoning effort (`low`, `medium`, `high`) without an IDE or language server.
 - **Live Markdown Streaming with Debounce (`TelegramStreamConsumer`):** Streams tokens in real time directly to Telegram messages with an animated cursor (`✨`), 0.8s debounced edits to prevent rate-limiting, and automatic message chunking for long responses.
 - **Emotional Intelligence Matrix (`EmotionEngine`):** Tracks dynamic emotional states (`warmth`, `affection`, `affinity`, `mood`) saved in `data/user_emotions.json`. Generates nuanced personality shifts across a spectrum from playful/affectionate to focused or pouty.
 - **Adaptive Psychotype & Style Mirroring (`AdaptiveEngine`):** Dynamically analyzes user tone, message length, emoji density, and sticker usage to adapt replies to the user's communication archetype.
@@ -51,8 +51,9 @@ geminka-agent/
 │   │   ├── adaptive.py          # Psychotype detection & style mirroring engine
 │   │   └── rp.py                # Interactive RP command detector & banner generator
 │   ├── services/
-│   │   ├── antigravity.py       # Direct OMP Gateway SSE client with retry mechanics
-│   │   ├── omp_gateway.py       # Background supervisor for open-antigravity proxy
+│   │   ├── agy_cli.py            # Direct agy stream-json session pool
+│   │   ├── antigravity.py        # Transport facade and legacy OMP fallback
+│   │   ├── omp_gateway.py         # Optional legacy OMP supervisor
 │   │   ├── streamer.py          # TelegramStreamConsumer & Markdown-to-HTML parser
 │   │   ├── rag.py               # SQLite vector/FTS long-term memory engine
 │   │   ├── topics.py            # TopicManager for group forum threads
@@ -76,8 +77,8 @@ geminka-agent/
 TELEGRAM_BOT_TOKEN="your_bot_token_here"
 TELEGRAM_ALLOWED_USERS="123456789"
 DEFAULT_MODEL="google-antigravity/gemini-3.7-flash"
-ANTIGRAVITY_PROJECT_ID="your_antigravity_project_id"
-OMP_BASE_URL="http://127.0.0.1:4000/v1"
+AGY_TRANSPORT="agy"
+AGY_CLI_PATH="agy"
 REASONING_EFFORT="medium"
 MAX_OUTPUT_TOKENS=8192
 STARTUP_NOTIFICATION=true
@@ -100,7 +101,7 @@ STARTUP_NOTIFICATION=true
 | `/rp` | 🌸 Interactive roleplay actions cheatsheet |
 | `/topic` | ⚙️ Forum topic management (`➕ Добавить в топик`, `📑 Топики`, `🗑 Отключить`) |
 | `/new` (`/reset`) | 🔄 Wipe dialogue context and start fresh |
-| `/status` | 📊 Status of OMP Gateway, active model, memory stats, and uptime |
+| `/status` | 📊 Status of agy CLI, active model, memory stats, and uptime |
 | `/help` | ❓ Comprehensive manual and guidance |
 
 ---

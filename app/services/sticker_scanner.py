@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 from app.core import config
 from app.core.files import atomic_write_json, load_json
 from app.core.state import state_store
+from app.services.agy_cli import AgyCliClient
 
 logger = logging.getLogger("geminka-scanner")
 
@@ -51,6 +52,11 @@ class StickerPackScanner:
         self.grids_dir.mkdir(parents=True, exist_ok=True)
         self._pack_locks: Dict[str, asyncio.Lock] = {}
         self._scheduled_scans: Dict[str, asyncio.Task] = {}
+        self._agy = (
+            AgyCliClient(timeout_seconds=360)
+            if config.settings.transport == "agy"
+            else None
+        )
 
     def _get_lock(self, set_name: str) -> asyncio.Lock:
         if set_name not in self._pack_locks:
@@ -262,26 +268,36 @@ class StickerPackScanner:
   ]
 }}
 """
-        # Call OMP Gateway
-        base_url = config.settings.omp_base_url.rstrip("/")
-        url = base_url + ("/chat/completions" if base_url.endswith("/v1") else "/v1/chat/completions")
-
-        payload = {
-            "model": config.settings.default_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "reasoning_effort": "medium",
-            "max_tokens": 12000,
-        }
-
-        timeout = httpx.Timeout(360.0, connect=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            headers = {"Authorization": f"Bearer {config.settings.omp_api_key}"} if config.settings.omp_api_key else {}
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                raise RuntimeError(f"OMP Vision HTTP {resp.status_code}: {resp.text[:300]}")
-            data = resp.json()
-            raw_content = data["choices"][0]["message"]["content"]
+        if self._agy:
+            chunks: list[str] = []
+            async for token in self._agy.stream(
+                user_id=0,
+                model=config.settings.default_model,
+                effort="medium",
+                messages=[{"role": "user", "content": prompt}],
+                debug=True,
+            ):
+                chunks.append(token)
+            raw_content = "".join(chunks)
+        else:
+            # Explicit legacy mode for deployments that still provide an OMP endpoint.
+            base_url = config.settings.omp_base_url.rstrip("/")
+            url = base_url + ("/chat/completions" if base_url.endswith("/v1") else "/v1/chat/completions")
+            payload = {
+                "model": config.settings.default_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "reasoning_effort": "medium",
+                "max_tokens": 12000,
+            }
+            timeout = httpx.Timeout(360.0, connect=30.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                headers = {"Authorization": f"Bearer {config.settings.omp_api_key}"} if config.settings.omp_api_key else {}
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"OMP Vision HTTP {resp.status_code}: {resp.text[:300]}")
+                data = resp.json()
+                raw_content = data["choices"][0]["message"]["content"]
 
         # Parse JSON output from model response
         cleaned = raw_content.strip()

@@ -72,7 +72,7 @@ async def cmd_start(message: types.Message):
         return
 
     greeting = (
-        '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Привет, мой краш! Я Geminka (Columbina)** — твой живой AI-ассистент и верная собеседница на ядре **Google Antigravity & OMP Gateway**.\n\n'
+        '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Привет, мой краш! Я Geminka (Columbina)** — твой живой AI-ассистент и верная собеседница на прямом ядре **agy CLI**.\n\n'
         '<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Команды управления (высвечиваются в меню по нажатию на `/`):**\n\n'
         '• `/model` — ⚡ Выбор AI модели (`Gemini 3.8 / 3.7`, `Claude Sonnet / Opus 4.6`)\n'
         '• `/reasoning` — 🎯 Настройка глубины размышлений модели (`low`, `medium`, `high`)\n'
@@ -82,9 +82,9 @@ async def cmd_start(message: types.Message):
         '• `/debug` — 🧪 переключить режим без записи новой памяти (`on` / `off`)\n'
         '• `/rp` — 🌸 Справочник интерактивных ролевых действий и команд\n'
         '• `/topic` — ⚙️ Настройка чатов топиков (Forum Threads)\n'
-        '• `/conv <id>` — 💬 Переключить диалог/сессию по Conversation ID\n'
+        '• `/conv <id>` — 💬 Переключить legacy-диалог (при OMP-транспорте)\n'
         '• `/new` — 🔄 Начать новый диалог с чистого листа (сброс истории)\n'
-        '• `/status` — 📊 Полный статус OMP Gateway, шлюза и параметров подключения\n'
+        '• `/status` — 📊 Полный статус agy CLI и параметров подключения\n'
         '• `/help` — ❓ Полное руководство и справка\n\n'
         '💡 _Просто отправь мне любое сообщение, стикер, фото или код — и давай общаться!_ <tg-emoji emoji-id="5305602448260345544">☺️</tg-emoji><tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>'
     )
@@ -331,6 +331,12 @@ async def cmd_conv(message: types.Message, antigravity_client: AntigravityClient
     args = message.text.split(maxsplit=1)[1:] if message.text else []
     user_id = message.from_user.id
 
+    if config.settings.transport == "agy" and args and args[0].strip().lower() not in {"reset", "new", "clear", "none"}:
+        await message.answer(
+            "Прямой agy CLI держит живую сессию автоматически. Для чистого диалога используй /new; импорт Conversation ID доступен только в legacy OMP-режиме."
+        )
+        return
+
     if not args or not args[0].strip():
         current_convo = antigravity_client.store.get_conversation_id(user_id)
         current_str = f"<code>{current_convo}</code>" if current_convo else "<i>Автоматический (новый)</i>"
@@ -525,9 +531,9 @@ async def cmd_status(message: types.Message, antigravity_client: AntigravityClie
     total_memories = await asyncio.to_thread(rag_engine.count, message.from_user.id)
 
     engine_status = (
-        f"🟢 OMP Gateway (`{config.OMP_BASE_URL}`) [Active]"
+        f"🟢 agy CLI (`{config.settings.transport}`) [Active]"
         if is_omp_alive
-        else "🔴 OMP Gateway недоступен"
+        else "🔴 agy CLI недоступен"
     )
 
     status_text = (
@@ -538,7 +544,7 @@ async def cmd_status(message: types.Message, antigravity_client: AntigravityClie
         f"• **Sliding Context Window:** `15 turns / 24k chars`\n"
         f"• **Личная память:** `{total_memories} записей в SQLite`\n"
         f"• **Теплота:** `{state.warmth}/100` | **Отношения:** `{state.get_relationship_stage()}`\n"
-        f"• **Авторизация:** `Telegram allowlist + OMP API key`"
+        f"• **Авторизация:** `Telegram allowlist + локальная сессия agy CLI`"
     )
     await send_response(message, status_text)
 
@@ -583,7 +589,7 @@ async def cmd_help(message: types.Message):
         '• `/rp` — список интерактивных ролевых действий\n'
         '• `/topic` — настройка и управление чатами топиков\n'
         '• `/new` — начать новый диалог (очистить контекстное окно)\n'
-        '• `/status` — статус OMP Gateway, шлюза, памяти и параметров\n\n'
+        '• `/status` — статус agy CLI, памяти и параметров\n\n'
         '✨ **Особенности:**\n'
         '• Нативные кастомные Telegram Premium эмодзи и автовыгрузка стикерпаков\n'
         '• Учёт истории последних 20 стикеров со штрафом 50% к повторам\n'

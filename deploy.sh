@@ -39,19 +39,7 @@ else
     pip install -q -e .
 fi
 
-# --- 3. Build Open-Antigravity Gateway if needed ---
-echo "🔧 [3/5] Проверка шлюза Antigravity Connect..."
-GATEWAY_DIR="$SCRIPT_DIR/tools/open-antigravity"
-GATEWAY_DIST="$GATEWAY_DIR/dist/index.js"
-
-if [ ! -f "$GATEWAY_DIST" ] && [ -d "$GATEWAY_DIR" ]; then
-    if command -v npm >/dev/null 2>&1; then
-        echo "🔹 Сборка TypeScript шлюза open-antigravity..."
-        (cd "$GATEWAY_DIR" && npm install --silent && npm run build --silent) || true
-    fi
-fi
-
-# --- 4. Environment & Tokens Validation ---
+# --- 3. Environment & Tokens Validation ---
 echo "🔑 [4/5] Проверка конфигурации .env..."
 ENV_FILE="$SCRIPT_DIR/.env"
 ENV_EXAMPLE="$SCRIPT_DIR/.env.example"
@@ -106,13 +94,14 @@ if [ -z "$USERS" ] || [ "$USERS" = "123456789" ]; then
 fi
 
 # Set sensible defaults
-[ -z "$(get_env_val "OMP_BASE_URL")" ] && set_env_val "OMP_BASE_URL" "http://127.0.0.1:4000/v1"
+[ -z "$(get_env_val "AGY_TRANSPORT")" ] && set_env_val "AGY_TRANSPORT" "agy"
+[ -z "$(get_env_val "AGY_CLI_PATH")" ] && set_env_val "AGY_CLI_PATH" "agy"
 [ -z "$(get_env_val "DEFAULT_MODEL")" ] && set_env_val "DEFAULT_MODEL" "google-antigravity/gemini-3.7-flash"
 [ -z "$(get_env_val "REASONING_EFFORT")" ] && set_env_val "REASONING_EFFORT" "medium"
 [ -z "$(get_env_val "MAX_OUTPUT_TOKENS")" ] && set_env_val "MAX_OUTPUT_TOKENS" "8192"
 
-# --- 5. Launch Bot ---
-echo "🚀 [5/5] Запуск Geminka Agent..."
+# --- 4. Launch Bot ---
+echo "🚀 [4/4] Запуск Geminka Agent..."
 echo "================================================================="
 
 if command -v uv >/dev/null 2>&1; then

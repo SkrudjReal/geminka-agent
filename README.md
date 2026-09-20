@@ -5,7 +5,7 @@
 <img src="https://raw.githubusercontent.com/SkrudjReal/geminka-agent/main/assets/columbina_with_kuukhenki.jpg" alt="Columbina Banner" width="380" style="border-radius: 16px; margin-bottom: 12px;">
 
 **Живая, умная и эмоциональная ИИ-спутница для Telegram**  
-*Создана с нежностью и архитектурной строгостью на базе Google Antigravity & Open Multi-Provider (OMP)*
+*Создана с нежностью и архитектурной строгостью на базе прямого authenticated `agy` CLI*
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![aiogram 3.x](https://img.shields.io/badge/aiogram-3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
@@ -46,9 +46,9 @@
         ┌──────────────────┼──────────────────┐
         ▼                  ▼                  ▼
 ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ Direct OMP   │   │ SQLite Store │   │  Emotional & │
-│ SSE Gateway  │   │  (WAL Mode)  │   │   Adaptive   │
-│ Stream (/v1) │   │              │   │   Dynamics   │
+│ Direct agy   │   │ SQLite Store │   │  Emotional & │
+│ CLI stream-  │   │  (WAL Mode)  │   │   Adaptive   │
+│ json session │   │              │   │   Dynamics   │
 └───────┬──────┘   └───────┬──────┘   └───────┬──────┘
         │                  │                  │
         ▼                  ▼                  ▼
@@ -65,8 +65,8 @@
    * Если `TELEGRAM_ALLOWED_USERS` пуст, бот не запустится в публичном режиме без явного флага `TELEGRAM_ALLOW_ALL_USERS=true`.
    * Outer middleware защищает сообщения, callback-кнопки и реакции.
 
-2. **⚡ Прямой OMP SSE транспорт генерации:**
-   * **Прямое подключение:** Высокоскоростной Server-Sent Events (SSE) стриминг токенов напрямую в Telegram через OpenAI-совместимый OMP Gateway (`/v1/chat/completions`).
+2. **⚡ Прямой транспорт agy CLI:**
+   * **Прямое подключение:** Geminka держит per-user `agy` CLI-сессию в `stream-json` и получает поток ответа напрямую, без Antigravity IDE, Xvfb и локального language server.
    * **Reasoning Resilience:** Гарантированная передача уровня `reasoning_effort` (`medium`/`low`/`high`) для Gemini 3.7 Flash и Claude (исключает ошибки `400 Thinking level MINIMAL is not supported` и `502 thought-only`).
    * **Умный Retry:** Bounded exponential backoff для 429 (RPS rate limit) и 5xx, выполняемый строго до первого байта вывода.
 3. **🗄️ Изолированный стейт в SQLite WAL (`data/state.db`):**
@@ -103,7 +103,7 @@ geminka-agent/
 │   │   ├── emotional.py
 │   │   ├── adaptive.py
 │   │   └── rp.py
-│   ├── services/           # Broadcaster, Antigravity OMP мост, RAG, стриминг
+│   ├── services/           # agy CLI, память, RAG, стриминг и Broadcaster
 │   │   ├── broadcaster.py
 │   │   ├── antigravity.py
 │   │   ├── harvester.py
@@ -184,7 +184,7 @@ docker compose logs -f geminka-agent
 | `/remember <факт>` | Записать важную деталь или факт в долговременную память |
 | `/new` (`/reset`) | Сброс контекста диалога и начало с чистого листа |
 | `/topic` (`/topics`) | Подключить, проверить или отключить конкретный форум-топик группы |
-| `/status` | Диагностика подключения к OMP Gateway и системные метрики |
+| `/status` | Диагностика подключения к agy CLI и системные метрики |
 
 ---
 

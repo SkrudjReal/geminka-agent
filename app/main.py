@@ -1,8 +1,7 @@
-"""Main entry point for Geminka Telegram Bot application (Antigravity Connect/SSE)."""
+"""Main entry point for Geminka Telegram Bot application using direct agy CLI."""
 
 import asyncio
 import logging
-from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -14,7 +13,6 @@ from app.bot.middlewares import OwnerAuthMiddleware
 from app.core import config
 from app.core.logger import setup_logging
 from app.services.antigravity import AntigravityClient
-from app.services.omp_gateway import start_omp_gateway_task
 from app.services.palace_memory import palace_memory
 
 logger = logging.getLogger("geminka-main")
@@ -55,26 +53,16 @@ async def main() -> None:
     config.settings.validate_startup()
     config.ensure_runtime_dirs()
 
-    # 2. Auto-start built-in Antigravity Connect/SSE Gateway if not running
-    omp_manager = None
-    omp_task = None
+    # 2. The default transport is the authenticated agy CLI. Legacy OMP is opt-in.
     antigravity_client = AntigravityClient()
     shared_chunks = await asyncio.to_thread(palace_memory.sync_shared_source)
     imported = await asyncio.to_thread(palace_memory.migrate_legacy, config.STATE_DB_FILE, config.settings.owner_user_id)
     logger.info("MemPalace initialized; shared context chunks=%d, migration counts: %s", shared_chunks, imported)
 
     if not await antigravity_client.check_omp_health():
-        parsed = urlparse(config.settings.omp_base_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 4000
-        logger.info("Antigravity Connect/SSE Gateway is offline. Auto-launching on %s:%d...", host, port)
-        try:
-            omp_manager, omp_task = await start_omp_gateway_task(host=host, port=port)
-            logger.info("Antigravity Connect/SSE Gateway is ONLINE on %s", config.settings.omp_base_url)
-        except Exception as e:
-            logger.warning("Could not auto-start Antigravity Gateway: %s", e)
+        logger.warning("agy CLI health check failed; generation will report the direct CLI error.")
     else:
-        logger.info("Antigravity Connect/SSE Gateway is ONLINE on %s", config.settings.omp_base_url)
+        logger.info("Direct agy CLI transport is authenticated and ready.")
 
     bot = Bot(
         token=config.settings.bot_token,
@@ -91,7 +79,7 @@ async def main() -> None:
     # 4. Include handler routes
     dp.include_router(router)
 
-    logger.info("Starting Geminka Telegram Bot (Antigravity Connect/SSE + Clean Architecture)...")
+    logger.info("Starting Geminka Telegram Bot (direct agy CLI + Clean Architecture)...")
     await bot.delete_webhook(drop_pending_updates=True)
 
     # 5. Register command menu for all private chats
@@ -127,10 +115,6 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await antigravity_client.aclose()
-        if omp_manager:
-            await omp_manager.aclose()
-        if omp_task:
-            omp_task.cancel()
         await bot.session.close()
 
 

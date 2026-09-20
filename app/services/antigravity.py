@@ -17,6 +17,7 @@ import httpx
 from app.core import config
 from app.core.context import ContextManager, context_manager
 from app.core.state import StateStore, state_store
+from app.services.agy_cli import AgyCliClient, AgyCliError
 from app.services.palace_memory import PalaceMemory
 from app.services.rag import RAGMemoryEngine, rag_engine
 
@@ -68,7 +69,7 @@ def _is_model_unavailable_error(value: object) -> bool:
 
 
 class AntigravityClient:
-    """Direct OMP Gateway Client communicating via OpenAI-compatible SSE streaming."""
+    """Geminka transport facade with direct agy and legacy OMP support."""
 
     def __init__(
         self,
@@ -80,6 +81,14 @@ class AntigravityClient:
         memories: RAGMemoryEngine | PalaceMemory = rag_engine,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
+        self._use_legacy_omp = (
+            base_url is not None
+            or http_client is not None
+            or config.settings.transport == "omp"
+        )
+        self._agy = None if self._use_legacy_omp else AgyCliClient(
+            timeout_seconds=config.settings.request_timeout_seconds,
+        )
         self.base_url = (base_url or config.settings.omp_base_url).rstrip("/")
         self.store = store
         self.contexts = contexts
@@ -90,16 +99,21 @@ class AntigravityClient:
         key = config.settings.omp_api_key if api_key is None else api_key
         if key:
             headers["Authorization"] = f"Bearer {key}"
-        self._client = http_client or httpx.AsyncClient(
+        self._client = None if self._agy else http_client or httpx.AsyncClient(
             headers=headers,
             timeout=httpx.Timeout(config.settings.request_timeout_seconds, connect=5.0),
         )
-        logger.info("Direct OMP client initialized for %s", self.base_url)
+        if self._agy:
+            logger.info("Direct agy CLI client initialized")
+        else:
+            logger.info("Legacy OMP client initialized for %s", self.base_url)
 
     async def aclose(self) -> None:
         if hasattr(self.memories, "drain"):
             await self.memories.drain()
-        if self._owns_client:
+        if self._agy:
+            await self._agy.aclose()
+        elif self._owns_client and self._client:
             await self._client.aclose()
 
     def get_user_model(self, user_id: int) -> str:
@@ -111,6 +125,8 @@ class AntigravityClient:
             raise ValueError(f"Unsupported model: {model_name}")
         self.store.set_preference(user_id, "model", normalized)
         self.store.set_conversation_id(user_id, None)
+        if self._agy:
+            self._agy.reset_user(user_id)
 
     def get_user_reasoning(self, user_id: int) -> str:
         return (
@@ -129,6 +145,8 @@ class AntigravityClient:
         self.contexts.clear_user_context(user_id)
         self.store.clear_preferences(user_id)
         self.store.set_conversation_id(user_id, None)
+        if self._agy:
+            self._agy.reset_user(user_id)
 
     def _get_endpoint(self, path: str) -> str:
         """Helper to construct correct path whether base_url has /v1 or not."""
@@ -139,6 +157,8 @@ class AntigravityClient:
 
     async def check_omp_health(self) -> bool:
         """Health-check against OMP /models or /health."""
+        if self._agy:
+            return await self._agy.check_health()
         for url in (self._get_endpoint("models"), f"{self.base_url}/health"):
             try:
                 response = await self._client.get(url, timeout=2.0)
@@ -150,6 +170,14 @@ class AntigravityClient:
 
     async def list_omp_models(self) -> list[str]:
         """Fetch available models from OMP."""
+        if self._agy:
+            cli_models = await self._agy.list_models()
+            return [
+                f"google-antigravity/{model}"
+                if model.startswith(("gemini-", "claude-"))
+                else model
+                for model in cli_models
+            ] or AVAILABLE_MODELS
         try:
             response = await self._client.get(self._get_endpoint("models"), timeout=5.0)
             response.raise_for_status()
@@ -222,7 +250,7 @@ class AntigravityClient:
         user_emojis_context: str = "",
         memory_input: dict | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Direct SSE chat completion stream from OMP Gateway with auto-retry and reasoning handling."""
+        """Stream a model reply through the selected direct or legacy transport."""
         model = self.get_user_model(user_id)
         reasoning_effort = self._ensure_reasoning_effort(model, self.get_user_reasoning(user_id))
         debug_mode = self.store.is_debug_mode(user_id)
@@ -283,6 +311,48 @@ class AntigravityClient:
                 + memory_context + "\n[Текущее сообщение пользователя]\n"
                 + messages[-1]["content"]
             )
+
+        if self._agy:
+            reply: list[str] = []
+            max_retries = max(config.settings.api_max_retries, 1)
+            for attempt in range(max_retries + 1):
+                emitted = False
+                try:
+                    async for token in self._agy.stream(
+                        context_id,
+                        model=model,
+                        effort=reasoning_effort,
+                        messages=messages,
+                        debug=debug_mode,
+                    ):
+                        emitted = True
+                        reply.append(token)
+                        yield token
+                    full_reply = "".join(reply).strip()
+                    if full_reply and not debug_mode:
+                        self.contexts.add_exchange(context_id, prompt, full_reply)
+                        if event_key:
+                            await asyncio.to_thread(
+                                self.memories.archive,
+                                user_id,
+                                full_reply,
+                                role="assistant",
+                                key=event_key + ":reply",
+                            )
+                    return
+                except AgyCliError as exc:
+                    if emitted:
+                        raise GatewayUnavailable("agy оборвал ответ после начала ответа.") from exc
+                    if attempt >= max_retries:
+                        raise GatewayUnavailable(f"Прямой agy CLI недоступен: {exc}") from exc
+                    logger.warning(
+                        "agy request failed; retrying attempt %d/%d: %s",
+                        attempt + 1,
+                        max_retries + 1,
+                        exc,
+                    )
+                    await self._backoff(attempt + 1)
+            raise GatewayUnavailable("Прямой agy CLI недоступен.")
 
         payload: dict[str, Any] = {
             "model": model,
@@ -396,6 +466,18 @@ class AntigravityClient:
 
     async def _memory_completion(self, user_id: int, system: str, text: str) -> str:
         """Isolated SSE call: no chat session, tools, persona or recursive memorization."""
+        if self._agy:
+            result: list[str] = []
+            async for token in self._agy.stream(
+                user_id,
+                model=self.get_user_model(user_id),
+                effort="low",
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
+                debug=True,
+            ):
+                result.append(token)
+            return "".join(result)
+
         payload = {
             "model": self.get_user_model(user_id),
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}],
@@ -427,7 +509,7 @@ class AntigravityClient:
         conversation_id: str | None = None,
         memory_input: dict | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Primary stream generator: delegates directly to OMP SSE chat."""
+        """Primary stream generator used by Telegram handlers."""
         del conversation_id  # Unused legacy argument preserved for signature compatibility
         async for token in self.stream_omp_chat(
             memory_input=memory_input,
@@ -445,7 +527,7 @@ OMPClient = AntigravityClient
 
 
 def load_antigravity_transcript(conversation_id: str) -> list[tuple[str, str]]:
-    """Loads and parses dialogue messages from Antigravity IDE brain transcript.jsonl."""
+    """Loads a legacy IDE transcript for explicit OMP session import."""
     if not conversation_id or not conversation_id.strip():
         return []
 
