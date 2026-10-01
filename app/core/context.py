@@ -66,8 +66,11 @@ class ContextManager:
                 system_parts.append(block.strip())
 
         current = current_prompt[: self.max_chars]
-        messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
-        messages.extend(self._bounded_history(user_id, self.max_chars - len(current)))
+        system_content = "\n\n".join(system_parts)
+        # Keep the user-controlled history and current message within the configured budget.
+        history_budget = max(0, self.max_chars - len(current))
+        messages = [{"role": "system", "content": system_content}]
+        messages.extend(self._bounded_history(user_id, history_budget))
         messages.append(
             {
                 "role": "user",

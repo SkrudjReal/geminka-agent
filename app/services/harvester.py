@@ -419,12 +419,12 @@ class AssetHarvester:
                 "• СТРОГО НЕ отправляй в точности тот же стикер, что прислал пользователь.",
             ]
 
-            # Sort packs: packs with descriptions first, then by count
+            # Sort packs: packs with descriptions first, then by count, take top 8 packs
             sorted_packs = sorted(
                 by_pack.items(),
                 key=lambda item: (sum(1 for s in item[1] if s.get("description")), len(item[1])),
                 reverse=True,
-            )
+            )[:8]
 
             for p_name, s_list in sorted_packs:
                 p_info = self.data.get("sticker_packs", {}).get(p_name, {})
@@ -434,15 +434,21 @@ class AssetHarvester:
 
                 with_desc = [s for s in s_list if s.get("description")]
                 if with_desc:
+                    sample_stickers = with_desc[:10]
+                    more_count = len(with_desc) - len(sample_stickers)
                     st_lines.append(f"\n📦 **Пак «{p_title}» (`{p_name}`)** ({len(with_desc)} описанных стикеров){summary_short}:")
-                    for s in with_desc:
+                    for s in sample_stickers:
                         em = s.get("emoji", "✨")
                         desc = s.get("description", "")
+                        if len(desc) > 90:
+                            desc = desc[:87] + "..."
                         tags = s.get("tags") or [em]
                         first_tag = tags[0]
                         st_lines.append(f"  • [{em}] {desc} -> `<tg-sticker pack=\"{p_name}\" tag=\"{first_tag}\"/>`")
+                    if more_count > 0:
+                        st_lines.append(f"  • ...и ещё {more_count} стикеров в этом паке (указывай pack=\"{p_name}\" и подходящий tag/эмоцию).")
                 else:
-                    em_list = list(dict.fromkeys([s.get("emoji", "✨") for s in s_list]))[:15]
+                    em_list = list(dict.fromkeys([s.get("emoji", "✨") for s in s_list]))[:12]
                     em_str = " ".join(em_list)
                     st_lines.append(f"\n📦 **Пак «{p_title}» (`{p_name}`)** ({len(s_list)} стикеров): эмодзи [{em_str}] -> `<tg-sticker pack=\"{p_name}\" emoji=\"...\"/>`")
 

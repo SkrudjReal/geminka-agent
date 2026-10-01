@@ -272,7 +272,10 @@ class AntigravityClient:
         runtime_context = (
             f"[ТЕКУЩЕЕ СОСТОЯНИЕ РЕЖИМА РАССУЖДЕНИЙ / REASONING EFFORT]:\n"
             f"• Модель: {model}\n"
-            f"• Активный уровень Reasoning Effort: {reasoning_effort.upper()} ({reasoning_desc})."
+            f"• Активный уровень Reasoning Effort: {reasoning_effort.upper()} ({reasoning_desc}).\n"
+            f"• Текущий Telegram chat_id: {memory_input.get('chat_id', user_id) if memory_input else user_id}.\n"
+            f"• Право на вызов Bot API по явному запросу: "
+            f"{'ДА' if config.settings.owner_user_id == user_id else 'НЕТ'}."
         )
 
         memory_context = ""
@@ -297,13 +300,13 @@ class AntigravityClient:
             user_id=context_id,
             current_prompt=prompt,
             system_prompt=system_prompt or config.get_system_prompt(),
-            emotional_context=emotional_context,
-            memory_context=memory_context,
-            adaptive_context=adaptive_context,
+            emotional_context="" if self._agy else emotional_context,
+            memory_context="" if self._agy else memory_context,
+            adaptive_context="" if self._agy else adaptive_context,
             user_emojis_context=user_emojis_context,
-            runtime_context=runtime_context,
+            runtime_context="" if self._agy else runtime_context,
         )
-        if convo_id and memory_context:
+        if not self._agy and convo_id and memory_context:
             # open-antigravity sends only the final user message on a reused cascade.
             # Keep the fresh recall attached there; never archive this wrapper as user text.
             messages[-1]["content"] = (
@@ -324,6 +327,14 @@ class AntigravityClient:
                         effort=reasoning_effort,
                         messages=messages,
                         debug=debug_mode,
+                        turn_context="\n\n".join(
+                            block for block in (memory_context, emotional_context, adaptive_context, runtime_context)
+                            if block
+                        ),
+                        tool_context={
+                            "requester_id": str(user_id),
+                            "chat_id": str(memory_input.get("chat_id", user_id) if memory_input else user_id),
+                        },
                     ):
                         emitted = True
                         reply.append(token)
@@ -435,16 +446,31 @@ class AntigravityClient:
                     attempt + 1,
                     max_retries + 1,
                 )
-                retryable = True
-                # The failed cascade may be left in an error state. Start a fresh
-                # one while preserving the local bounded conversation context.
                 if convo_id:
                     self.store.set_conversation_id(context_id, None)
                     convo_id = None
                     payload.pop("conversation_id", None)
                     req_headers.pop("x-conversation-id", None)
-            except GatewayError:
-                raise
+            except GatewayError as exc:
+                # If Antigravity killed/lost trajectory or timed out on a reused cascade, drop dead conversation_id and retry
+                is_stale_cascade = convo_id and not emitted and (
+                    "trajectory" in str(exc).lower()
+                    or "timed out" in str(exc).lower()
+                    or "timeout" in str(exc).lower()
+                )
+                if is_stale_cascade:
+                    logger.warning(
+                        "Stored conversation %s failed or timed out (%s); resetting conversation_id and retrying...",
+                        convo_id,
+                        exc,
+                    )
+                    self.store.set_conversation_id(context_id, None)
+                    convo_id = None
+                    payload.pop("conversation_id", None)
+                    req_headers.pop("x-conversation-id", None)
+                    retryable = True
+                else:
+                    raise
             except httpx.HTTPError as exc:
                 if emitted:
                     raise GatewayUnavailable("OMP оборвал поток после начала ответа.") from exc

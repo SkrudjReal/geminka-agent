@@ -7,6 +7,7 @@ from app.services.streamer import (
     md_to_telegram_html,
     resolve_local_file,
     split_telegram_text,
+    strip_delivery_tags,
 )
 
 
@@ -20,6 +21,10 @@ def test_long_text_is_split_within_limit() -> None:
     chunks = split_telegram_text(("word " * 3_000).strip(), limit=500)
     assert " ".join(chunks).replace("  ", " ") == ("word " * 3_000).strip()
     assert all(len(chunk) <= 500 for chunk in chunks)
+
+
+def test_delivery_text_unescapes_literal_newlines() -> None:
+    assert strip_delivery_tags("one\\n\\ntwo") == "one\n\ntwo"
 
 
 class _SentMessage:

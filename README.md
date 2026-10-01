@@ -1,218 +1,187 @@
-# 🌸 Columbina (Geminka Agent) 🕊️✨
+# Geminka Agent — Columbina для Telegram
 
-<div align="center">
+Geminka — Telegram-ассистент на Python и aiogram. По умолчанию она отвечает через
+аутентифицированный `agy` CLI, ведёт отдельную сессию для каждого пользователя,
+передаёт ответы потоково и хранит долговременную память в MemPalace.
 
-<img src="https://raw.githubusercontent.com/SkrudjReal/geminka-agent/main/assets/columbina_with_kuukhenki.jpg" alt="Columbina Banner" width="380" style="border-radius: 16px; margin-bottom: 12px;">
+## Возможности
 
-**Живая, умная и эмоциональная ИИ-спутница для Telegram**  
-*Создана с нежностью и архитектурной строгостью на базе прямого authenticated `agy` CLI*
+- Доступ по списку `TELEGRAM_ALLOWED_USERS`; публичный режим выключен по умолчанию.
+- Модели Gemini 3.8/3.7/3.6 Flash и Claude Sonnet/Opus 4.6 — список выбирается
+  командой `/model`, глубина рассуждений — `/reasoning`.
+- MemPalace: архив диалогов, поиск по смыслу, факты и обновляемый портрет; короткая
+  история и настройки остаются в SQLite. Подробнее: [docs/mempalace.md](docs/mempalace.md).
+- Стикеры, Premium Emoji, реакции, RP-действия и потоковая отправка файлов.
+- В проекте есть owner-only MCP-мост к Telegram Bot API (`app/services/bot_api_mcp.py`).
+  Для его вызова сервер должен быть зарегистрирован в MCP-настройках используемого
+  `agy` CLI; локальная регистрация и учётные данные в репозитории не хранятся.
+  При активном мосте публикация в канал проходит через личный черновик с фото,
+  отдельный комментарий-reply и пересылку.
+- Для постов редактируется [POST_STYLE.md](POST_STYLE.md); исходный вариант хранится
+  в [POST_STYLE_DEFAULT.md](POST_STYLE_DEFAULT.md). Изображения ищутся в Pinterest,
+  показываются контакт-листом для выбора, а использованные ссылки учитываются локально.
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![aiogram 3.x](https://img.shields.io/badge/aiogram-3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
-[![uv](https://img.shields.io/badge/uv-Fast%20Packaging-DE5FE9?style=for-the-badge&logo=astral&logoColor=white)](https://docs.astral.sh/uv/)
-[![SQLite WAL](https://img.shields.io/badge/SQLite-WAL%20State-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://sqlite.org)
-[![Tests](https://img.shields.io/badge/Tests-16%20Passed-4c1?style=for-the-badge&logo=pytest&logoColor=white)](https://pytest.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+## Как устроено
 
-</div>
+Telegram updates обрабатываются aiogram и проверяются middleware доступа. Хендлеры
+собирают текст и медиа-контекст, затем `AntigravityClient` использует прямой `agy`
+CLI по умолчанию либо старый OpenAI-совместимый OMP-транспорт при явной настройке.
+Состояние и короткая история хранятся в `data/state.db`; личные долговременные данные
+MemPalace — в `memory/users/<telegram-user-id>/`, общий контекст — в `memory/shared/`.
 
----
-
-## ✨ Обо мне
-
-Привет! Я **Коломбина** (Коломбиночка, Клумба, Геминка) — твоя личная автономная ИИ-спутница и верная напарница. 
-
-Я умею не просто сухо отвечать на команды, а по-настоящему чувствовать контекст: сопереживать, шутить, поддерживать теплоту общения, помнить всё важное о нас и присылать живые реакции со стикерами и кастомными эмодзи! 💖
-
----
-
-## 🏛️ Архитектура системы
-
-```text
-               ┌────────────────────────┐
-               │    Telegram Updates    │
-               └───────────┬────────────┘
-                           │
-                           ▼
-          ┌──────────────────────────────────┐
-          │  Deny-by-Default Auth Middleware │
-          └────────────────┬─────────────────┘
-                           │
-                           ▼
-          ┌──────────────────────────────────┐
-          │     Per-User Concurrency Lock    │
-          └────────────────┬─────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ Direct agy   │   │ SQLite Store │   │  Emotional & │
-│ CLI stream-  │   │  (WAL Mode)  │   │   Adaptive   │
-│ json session │   │              │   │   Dynamics   │
-└───────┬──────┘   └───────┬──────┘   └───────┬──────┘
-        │                  │                  │
-        ▼                  ▼                  ▼
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ Gemini 3.7 / │   │ State / RAG  │   │ Psychotype & │
-│ Claude Sonnet│   │  Isolation   │   │  Roleplay    │
-│  + Reasoning │   │  per-User ID │   │   Dynamics   │
-└──────────────┘   └──────────────┘   └──────────────┘
-```
-
-### 🛡️ Ключевые возможности и гарантии безопасности
-
-1. **🔒 Закрытый по умолчанию доступ (Deny-by-default):**
-   * Если `TELEGRAM_ALLOWED_USERS` пуст, бот не запустится в публичном режиме без явного флага `TELEGRAM_ALLOW_ALL_USERS=true`.
-   * Outer middleware защищает сообщения, callback-кнопки и реакции.
-
-2. **⚡ Прямой транспорт agy CLI:**
-   * **Прямое подключение:** Geminka держит per-user `agy` CLI-сессию в `stream-json` и получает поток ответа напрямую, без Antigravity IDE, Xvfb и локального language server.
-   * **Reasoning Resilience:** Гарантированная передача уровня `reasoning_effort` (`medium`/`low`/`high`) для Gemini 3.7 Flash и Claude (исключает ошибки `400 Thinking level MINIMAL is not supported` и `502 thought-only`).
-   * **Умный Retry:** Bounded exponential backoff для 429 (RPS rate limit) и 5xx, выполняемый строго до первого байта вывода.
-3. **🗄️ Изолированный стейт в SQLite WAL (`data/state.db`):**
-   * Полная изоляция истории диалогов, персональных настроек моделей, уровня reasoning и RAG-памяти по Telegram User ID.
-   * Атомарная запись состояний и профилей.
-
-4. **🧠 Защищённая RAG-память:**
-   * Фильтрация невидимых управляющих символов Unicode и защита от Prompt Injection.
-   * Динамический скоринг релевантности и строгие лимиты объёма контекста.
-
-5. **🎭 Эмоциональное ядро и адаптивная мимикрия:**
-   * Отслеживание настроения, уровня близости, тепла и энергии.
-   * Автоматический сбор и использование кастомных Telegram Premium эмодзи (`<tg-emoji>`) и стикеров.
-
-6. **📢 Надежный сервис рассылки (Latand Broadcaster):**
-   * Гранулярная обработка ошибок Telegram (`TelegramRetryAfter`, `TelegramForbiddenError`, `TelegramNotFound`).
-   * Мягкий флуд-контроль и маскирование чувствительных данных в логах.
-
----
-
-## 📁 Структура проекта
-
-```
-geminka-agent/
-├── app/
-│   ├── core/               # Конфигурация, SQLite стейт, логгер, безопасность
-│   │   ├── config.py
-│   │   ├── concurrency.py
-│   │   ├── context.py
-│   │   ├── files.py
-│   │   ├── logger.py
-│   │   └── state.py
-│   ├── engines/            # Эмоциональное ядро, адаптация и RP-движок
-│   │   ├── emotional.py
-│   │   ├── adaptive.py
-│   │   └── rp.py
-│   ├── services/           # agy CLI, память, RAG, стриминг и Broadcaster
-│   │   ├── broadcaster.py
-│   │   ├── antigravity.py
-│   │   ├── harvester.py
-│   │   ├── rag.py
-│   │   └── streamer.py
-│   ├── bot/                # Маршрутизация, хендлеры, мидлвари и хелперы
-│   │   ├── handlers.py
-│   │   ├── middlewares.py
-│   │   └── helpers.py
-│   ├── healthcheck.py      # Docker healthcheck
-│   └── main.py             # Главная точка входа приложения
-├── data/                   # База данных SQLite, стикеры и профили
-├── memories/               # Локальная RAG-память и факты
-├── tests/                  # 16 автоматических юнит- и интеграционных тестов
-├── main.py                 # Корневой скрипт запуска
-├── run.sh                  # Shell-скрипт быстрого запуска через uv
-├── Dockerfile              # Non-root Dockerfile с multi-stage сборкой
-├── docker-compose.yml      # Оркестрация контейнера
-├── pyproject.toml          # Зависимости и конфигурация инструментов
-└── system_prompt.md        # Динамический системный промпт
-```
-
----
-
-## 🚀 Быстрый старт
-
-### 1. Клонирование и настройка окружения
+Для прямого транспорта нужен установленный и заранее авторизованный `agy` CLI.
+Geminka не запускает Antigravity IDE, Xvfb или language server и не выполняет
+авторизацию за пользователя. Проверь CLI от того же Linux-пользователя, под которым
+будет работать бот:
 
 ```bash
-git clone git@github.com:SkrudjReal/geminka-agent.git
-cd geminka-agent
+agy models
+```
 
-# Копируем шаблон переменных окружения
+`AGY_TRANSPORT=agy` — режим по умолчанию. `AGY_TRANSPORT=omp` включает legacy-путь;
+для него нужен доступный OpenAI-совместимый OMP endpoint.
+
+## Установка и запуск
+
+Требуются Python 3.10+ и [uv](https://docs.astral.sh/uv/). Склонируй проект и создай
+локальный файл настроек:
+
+```bash
+git clone https://github.com/SkrudjReal/geminka-agent.git
+cd geminka-agent
 cp .env.example .env
 ```
 
-Отредактируйте `.env`:
+Укажи в `.env` токен BotFather и Telegram ID пользователей, которым разрешён доступ.
+Минимально необходимые параметры:
 
 ```env
-TELEGRAM_BOT_TOKEN=123456789:AA...
-TELEGRAM_ALLOWED_USERS=1224362805
-TELEGRAM_OWNER_ID=1224362805
-DEFAULT_MODEL=flash
-REASONING_EFFORT=medium
-STARTUP_NOTIFICATION=true
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_ALLOWED_USERS=123456789
+TELEGRAM_OWNER_ID=123456789
+AGY_TRANSPORT=agy
+AGY_CLI_PATH=agy
+DEFAULT_MODEL=google-antigravity/gemini-3.8-flash
+REASONING_EFFORT=high
 ```
 
-### 2. Запуск через `uv` (Рекомендуется)
+Затем синхронизируй зависимости и запусти приложение в текущем терминале:
 
 ```bash
-# Синхронизация зависимостей
-uv sync --frozen --all-groups
-
-# Запуск бота
-uv run main.py
-# Или через скрипт
-./run.sh
+uv sync --frozen
+uv run python main.py
 ```
 
-### 3. Запуск в Docker
+На Linux/WSL с `systemd --user` можно вместо ручного запуска выполнить `./run.sh`.
+Скрипт синхронизирует окружение, при необходимости задаёт недостающие значения,
+создаёт и включает пользовательский `geminka.service`, затем перезапускает его.
+Он не устанавливает и не авторизует `agy` CLI.
+
+Управление пользовательской службой:
+
+```bash
+systemctl --user status geminka
+journalctl --user -u geminka -f
+systemctl --user restart geminka
+systemctl --user stop geminka
+```
+
+## Настройки
+
+Полный шаблон находится в [.env.example](.env.example). Основные параметры:
+
+| Переменная | Назначение |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Токен Telegram-бота; обязателен |
+| `TELEGRAM_ALLOWED_USERS` | Разрешённые числовые Telegram ID через запятую |
+| `TELEGRAM_OWNER_ID` | ID владельца; включает owner-only Bot API/MCP-действия |
+| `TELEGRAM_ALLOW_ALL_USERS` | Разрешить всем пользователям; по умолчанию `false` |
+| `AGY_TRANSPORT` | `agy` (по умолчанию) или legacy `omp` |
+| `AGY_CLI_PATH` | Имя или путь к исполняемому файлу `agy` |
+| `DEFAULT_MODEL` | Модель по умолчанию; пользователь может выбрать другую через `/model` |
+| `REASONING_EFFORT` | Уровень рассуждений: `low`, `medium` или `high` |
+| `OMP_BASE_URL`, `OMP_API_KEY` | Адрес и необязательный ключ только для OMP-режима |
+| `MAX_INPUT_CHARS`, `MAX_DOWNLOAD_BYTES` | Ограничения входного текста и размера скачиваемых файлов |
+| `REQUEST_TIMEOUT_SECONDS`, `API_MAX_RETRIES` | Таймаут и лимит повторов для сетевого транспорта |
+| `STARTUP_NOTIFICATION` | Отправлять ли уведомление владельцу при запуске |
+
+Первое использование MemPalace может скачать локальную ONNX-модель эмбеддингов
+с Hugging Face. Дальнейший векторный поиск выполняется локально; при анализе сообщений
+их содержимое отправляется настроенному LLM-провайдеру.
+
+## Команды бота
+
+| Команда | Назначение |
+| --- | --- |
+| `/start`, `/help` | Приветствие и справка |
+| `/model`, `/reasoning` | Выбор модели и уровня рассуждений |
+| `/mood` | Состояние эмоциональной модели |
+| `/memory`, `/remember` | Просмотр памяти и явная запись факта |
+| `/portrait`, `/recall` | Просмотр портрета и семантический поиск по памяти |
+| `/forget confirm` | Удаление личной памяти и короткого контекста пользователя |
+| `/debug` | Переключение режима без новых записей в память и локальное состояние |
+| `/new` | Сбросить короткую историю и live-сессию |
+| `/conv` | Управление диалогом; импорт Conversation ID относится к legacy OMP |
+| `/topic` | Настройки форум-топиков |
+| `/rp` | Справочник RP-действий |
+| `/status` | Состояние транспорта, памяти и параметров |
+
+`/debug` не удаляет ранее сохранённое. `/forget confirm` удаляет palace и короткий
+контекст выбранного пользователя; старые источники, бэкапы и внешние сессии провайдера
+не удаляются. Перед очисткой или переносом данных прочитай разделы о резервных копиях
+в [документации MemPalace](docs/mempalace.md).
+
+## Посты в канал
+
+Для канального `send_message` Geminka сначала подготавливает изображение и отправляет
+владельцу фото-черновик с подписью. После этого она отправляет отдельный reply-комментарий
+и пересылает фото-черновик в указанный канал. Успешной публикация считается только
+после успешного `forward_message`.
+
+Для формирования превью используется `scripts/select_post_image.py`: поиск Pinterest,
+фильтр уже использованных URL и контакт-лист с несколькими пронумерованными вариантами.
+Выбор изображения делает модель по визуальному контакт-листу; файл и список использованных
+ссылок хранятся локально в `downloads/` и `data/post_images.json`.
+
+## Docker
+
+Включённый Dockerfile не устанавливает `agy` и не содержит его учётных данных. Поэтому
+образ из коробки работает только с доступным OMP endpoint. Для запуска контейнера укажи
+в `.env` `AGY_TRANSPORT=omp` и адрес OMP, доступный из контейнера, например
+`http://host.docker.internal:4000/v1` для сервера на хосте, затем выполни:
 
 ```bash
 docker compose up -d --build
 docker compose logs -f geminka-agent
 ```
 
----
+Для прямого `agy` в Docker потребуется самостоятельно включить CLI и его авторизацию
+в образ/контейнер; текущие compose-файлы этого не настраивают. На Linux/WSL без такого
+образа используй нативный запуск выше.
 
-## 💬 Команды управления
+## Данные и приватность
 
-| Команда | Описание |
-| :--- | :--- |
-| `/start` | Приветствие Коломбины и краткая справка |
-| `/model` | Интерактивный выбор нейросетевой модели |
-| `/reasoning` | Настройка глубины размышлений (`low`, `medium`, `high`) |
-| `/mood` | Текущее эмоциональное состояние и уровень отношений |
-| `/memory` | Просмотр долговременных воспоминаний |
-| `/remember <факт>` | Записать важную деталь или факт в долговременную память |
-| `/new` (`/reset`) | Сброс контекста диалога и начало с чистого листа |
-| `/topic` (`/topics`) | Подключить, проверить или отключить конкретный форум-топик группы |
-| `/status` | Диагностика подключения к agy CLI и системные метрики |
+- `.env`, SQLite-файлы, `memory/`, `downloads/`, сессии и кэши не следует публиковать.
+- Память разделена по Telegram user ID. `/debug` отключает новые записи, а не чтение
+  имеющейся памяти; `/forget confirm` предназначен для удаления данных одного пользователя.
+- `data/default_stickers.json` и `data/default_emojis.json` — каталоги поставляемых
+  ресурсов; `*.example.json` — шаблоны. Некоторые исторические runtime JSON-файлы
+  уже отслеживаются Git, поэтому перед коммитом проверяй их diff отдельно: `.gitignore`
+  не отменяет отслеживание файла, который уже есть в репозитории.
+- Содержимое пользовательских сообщений передаётся LLM для ответа и фонового анализа
+  долговременной памяти. Не добавляй в диалоги пароли, токены и платёжные данные.
 
----
-
-## 🧪 Тестирование и качество кода
-
-Проект полностью покрыт автоматическими тестами:
+## Проверки для разработки
 
 ```bash
-# Запуск тестов
 uv run pytest
-
-# Проверка линтером Ruff
 uv run ruff check .
-
-# Проверка синтаксиса bash
-bash -n run.sh
+bash -n run.sh scripts/start.sh
 ```
 
----
+Тесты локальные и не заменяют проверку аутентификации `agy`, доступности Telegram,
+OMP или Pinterest в конкретном окружении.
 
-## 📜 Лицензия
+## Лицензия
 
-Проект распространяется под открытой лицензией [MIT](LICENSE).
-
-<div align="center">
-  <i>С любовью, твоя Коломбина 🌸</i>
-</div>
-# Память MemPalace
-
-Постоянный архив Telegram, векторный поиск и автоматический портрет пользователя:
-[настройка, миграция и команды](docs/mempalace.md).
+Проект распространяется по лицензии [MIT](LICENSE).

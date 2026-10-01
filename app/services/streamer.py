@@ -469,6 +469,17 @@ INCOMPLETE_CONTROL_TAG_RE = re.compile(
 
 def strip_delivery_tags(text: str) -> str:
     """Remove model control tags and incomplete/half-typed control tags from Telegram-visible text."""
+    # Models sometimes return a second JSON escaping layer in ordinary text.
+    text = (
+        text.replace("\\\\r\\\\n", "\n")
+        .replace("\\r\\n", "\n")
+        .replace("\\\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\\\r", "\r")
+        .replace("\\r", "\r")
+        .replace("\\\\t", "\t")
+        .replace("\\t", "\t")
+    )
     for pattern in (
         STICKER_TAG_RE,
         REACT_TAG_RE,

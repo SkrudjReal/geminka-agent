@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,7 +48,9 @@ class _Session:
     effort: str
     lock: asyncio.Lock
     started: bool = False
+    instructions: str = ""
     stderr_task: asyncio.Task[None] | None = None
+    tool_context: tuple[tuple[str, str], ...] = ()
 
 
 class AgyCliClient:
@@ -128,29 +130,65 @@ class AgyCliClient:
         effort: str,
         messages: list[dict[str, str]],
         debug: bool = False,
+        turn_context: str = "",
+        tool_context: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield response deltas from one direct CLI turn."""
         cli_model = cli_model_name(model, effort)
+        current = dict(messages[-1])
+        if turn_context:
+            current["content"] = (
+                "[CURRENT TURN CONTEXT — replaces previous turn context]\n"
+                + turn_context + "\n[CURRENT USER MESSAGE]\n" + current["content"]
+            )
+        full_messages = [*messages[:-1], current]
+        tool_context = tool_context or {}
         if debug:
-            async for token in self._stream_once(cli_model, effort, format_messages(messages)):
+            async for token in self._stream_once(
+                cli_model, effort, format_messages(full_messages), tool_context
+            ):
                 yield token
             return
 
-        session = await self._get_session(user_id, cli_model, effort)
+        session = await self._get_session(user_id, cli_model, effort, tool_context)
         async with session.lock:
-            prompt = format_messages(messages) if not session.started else format_messages((messages[0], messages[-1]))
+            instructions = messages[0]["content"]
+            if not session.started:
+                outgoing = full_messages
+            elif session.instructions != instructions:
+                outgoing = [
+                    {"role": "system", "content": "[UPDATED INSTRUCTIONS — replace previous instructions]\n" + instructions},
+                    current,
+                ]
+            else:
+                outgoing = [current]
+            prompt = format_messages(outgoing)
+            logger.info("agy turn: bootstrap=%s chars=%d", not session.started, len(prompt))
             try:
                 async for token in self._send(session, prompt):
                     yield token
                 session.started = True
+                session.instructions = instructions
             except (AgyCliError, asyncio.TimeoutError):
                 self._sessions.pop(user_id, None)
                 await self._close_session(session)
                 raise
 
-    async def _get_session(self, user_id: int, model: str, effort: str) -> _Session:
+    async def _get_session(
+        self,
+        user_id: int,
+        model: str,
+        effort: str,
+        tool_context: Mapping[str, str] | None = None,
+    ) -> _Session:
+        context_signature = self._tool_context_signature(tool_context)
         current = self._sessions.get(user_id)
-        if current and current.process.returncode is None and (current.model, current.effort) == (model, effort):
+        if (
+            current
+            and current.process.returncode is None
+            and (current.model, current.effort) == (model, effort)
+            and current.tool_context == context_signature
+        ):
             return current
         if current:
             await self._close_session(current)
@@ -172,16 +210,25 @@ class AgyCliClient:
             "--print-timeout",
             f"{self.timeout_seconds}s",
             cwd=self.project_dir,
+            env=self._tool_env(tool_context),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        session = _Session(process, model, effort, asyncio.Lock())
+        session = _Session(
+            process, model, effort, asyncio.Lock(), tool_context=context_signature
+        )
         session.stderr_task = asyncio.create_task(self._drain_stderr(session))
         self._sessions[user_id] = session
         return session
 
-    async def _stream_once(self, model: str, effort: str, prompt: str) -> AsyncGenerator[str, None]:
+    async def _stream_once(
+        self,
+        model: str,
+        effort: str,
+        prompt: str,
+        tool_context: Mapping[str, str] | None = None,
+    ) -> AsyncGenerator[str, None]:
         process = await asyncio.create_subprocess_exec(
             self.command,
             "--print=",
@@ -199,11 +246,18 @@ class AgyCliClient:
             "--print-timeout",
             f"{self.timeout_seconds}s",
             cwd=self.project_dir,
+            env=self._tool_env(tool_context),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        session = _Session(process, model, effort, asyncio.Lock())
+        session = _Session(
+            process,
+            model,
+            effort,
+            asyncio.Lock(),
+            tool_context=self._tool_context_signature(tool_context),
+        )
         session.stderr_task = asyncio.create_task(self._drain_stderr(session))
         try:
             if process.stdin is None:
@@ -220,6 +274,25 @@ class AgyCliClient:
             await asyncio.wait_for(process.wait(), timeout=10)
         finally:
             await self._close_session(session)
+
+    @staticmethod
+    def _tool_context_signature(
+        tool_context: Mapping[str, str] | None,
+    ) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            sorted(
+                (str(key), str(value))
+                for key, value in (tool_context or {}).items()
+                if key in {"requester_id", "chat_id"}
+            )
+        )
+
+    @classmethod
+    def _tool_env(cls, tool_context: Mapping[str, str] | None) -> dict[str, str]:
+        env = os.environ.copy()
+        for key, value in cls._tool_context_signature(tool_context):
+            env[f"GEMINKA_{key.upper()}"] = value
+        return env
 
     async def _send(self, session: _Session, prompt: str | None) -> AsyncGenerator[str, None]:
         process = session.process

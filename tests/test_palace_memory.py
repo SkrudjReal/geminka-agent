@@ -66,6 +66,19 @@ def memory(tmp_path):
     return PalaceMemory(tmp_path / "memory", factory)
 
 
+def test_recall_budget_preserves_personal_memory_over_shared_style(memory):
+    memory._put(1, "portrait", "p" * 6000, "portrait")
+    memory._put(1, "agent-portrait", "a" * 4000, "agent_portrait")
+    memory._put(1, "important", "Пользователь любит чай", "facts", certainty="explicit")
+    for index in range(4):
+        memory._put_shared(str(index), "s" * 1500)
+    context = memory.format_rag_context(1, "чай")
+    data = json.loads(context.split("\n", 1)[1])
+    assert len(context) <= 8000
+    assert any(hit["id"] == "important" for hit in data["recalled"])
+    assert len(memory.portrait(1)) == 6000
+
+
 def test_agent_persona_is_recalled_but_not_used_as_user_portrait(memory):
     memory._put(1, "portrait", "Пользователь любит чай", "portrait")
     memory._put(1, "agent-portrait", "Коломбина — фарфоровая муза", "agent_portrait")
