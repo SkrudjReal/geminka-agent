@@ -11,6 +11,7 @@ from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommand
 from app.bot.handlers import router
 from app.bot.middlewares import OwnerAuthMiddleware
 from app.core import config
+from app.core.instance import acquire_bot_lock
 from app.core.logger import setup_logging
 from app.services.antigravity import AntigravityClient
 from app.services.palace_memory import palace_memory
@@ -34,6 +35,8 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="sandbox", description="🛡️ Файловая песочница (только владелец)"),
         BotCommand(command="rp", description="🌸 Справочник интерактивных RP-действий"),
         BotCommand(command="topic", description="⚙️ Настройка чатов топиков (Forum Threads)"),
+        BotCommand(command="chats", description="💬 Разрешённые группы (только владелец)"),
+        BotCommand(command="prefix", description="🌸 Префиксы групп (только владелец)"),
         BotCommand(command="conv", description="💬 Переключить диалог/сессию по ID"),
         BotCommand(command="new", description="🔄 Начать новый диалог (сбросить контекст)"),
         BotCommand(command="status", description="🌟 Статус шлюза OMP, движка и метрики"),
@@ -121,7 +124,9 @@ async def main() -> None:
 
 def run() -> None:
     try:
-        asyncio.run(main())
+        config.settings.validate_startup()
+        with acquire_bot_lock(config.settings.bot_token):
+            asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot stopped cleanly.")
     except config.ConfigurationError as exc:

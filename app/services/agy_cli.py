@@ -16,6 +16,7 @@ from collections.abc import AsyncGenerator, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core import config
 from app.services.sandbox import SandboxError, agy_sandbox_command
 
 logger = logging.getLogger(__name__)
@@ -91,21 +92,27 @@ class AgyCliClient:
             self.sandbox_enabled = enabled
             await self._close_all()
 
-    def _sandbox_command(self, args: list[str]) -> list[str]:
-        if not self.sandbox_enabled:
-            return [self.command, *args]
+    def _sandbox_command(self, args: list[str], *, read_only: bool = False) -> list[str]:
         try:
-            return agy_sandbox_command([self.command, "--sandbox", *args], self.project_dir)
+            if not self.sandbox_enabled and not read_only:
+                return agy_sandbox_command([self.command, *args], self.project_dir, restricted=False)
+            return agy_sandbox_command(
+                [self.command, "--sandbox", *args], self.project_dir, read_only=read_only,
+            )
         except (SandboxError, OSError) as exc:
             raise AgyCliError(str(exc)) from exc
 
-    def _launch_command(self, model: str, effort: str) -> list[str]:
+    def _launch_command(
+        self, model: str, effort: str, tool_context: Mapping[str, str] | None = None,
+    ) -> list[str]:
+        requester = (tool_context or {}).get("requester_id")
+        read_only = requester is not None and requester != str(config.settings.owner_user_id)
         return self._sandbox_command([
             "--print=", "--input-format", "stream-json", "--output-format", "stream-json",
-            "--model", model, "--effort", effort, "--mode", "accept-edits",
+            "--model", model, "--effort", effort, "--mode", "plan" if read_only else "accept-edits",
             "--add-dir", str(self.project_dir), "--disable-slash-commands",
             "--print-timeout", f"{self.timeout_seconds}s",
-        ])
+        ], read_only=read_only)
 
     def reset_user(self, user_id: int) -> None:
         session = self._sessions.pop(user_id, None)
@@ -234,7 +241,7 @@ class AgyCliClient:
             await self._close_session(current)
 
         process = await asyncio.create_subprocess_exec(
-            *self._launch_command(model, effort),
+            *self._launch_command(model, effort, tool_context),
             cwd=self.project_dir,
             env=self._tool_env(tool_context),
             stdin=asyncio.subprocess.PIPE,
@@ -258,7 +265,7 @@ class AgyCliClient:
     ) -> AsyncGenerator[str, None]:
         async with self._lifecycle_lock:
             process = await asyncio.create_subprocess_exec(
-                *self._launch_command(model, effort),
+                *self._launch_command(model, effort, tool_context),
                 cwd=self.project_dir,
                 env=self._tool_env(tool_context),
                 stdin=asyncio.subprocess.PIPE,

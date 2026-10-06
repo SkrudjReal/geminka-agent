@@ -161,13 +161,15 @@ uv run python main.py
 ./run.sh
 ```
 
-`run.sh` can create and restart `geminka.service` through `systemd --user`. It does not install or authenticate the `agy` CLI. To manage the service manually:
+`run.sh` names the service after the project directory: `geminka-agent.service`, `geminka-agent2.service`. If another directory occupies the name, a numeric suffix is added (`geminka-agent1.service`). Repeated launches reuse this directory's service. Legacy `geminka.service` is migrated only if it points to this project. Unrelated processes are not stopped. The runner does not install or authenticate `agy`. It prints the actual name; substitute it below when a suffix is present:
 
 ```bash
-systemctl --user status geminka
-journalctl --user -u geminka -f
-systemctl --user restart geminka
+systemctl --user status geminka-agent.service
+journalctl --user -u geminka-agent.service -f
+systemctl --user restart geminka-agent.service
 ```
+
+Multiple copies need **different BotFather tokens** and separate `.env`, `data/`, `memory/`, `memories/`, and `downloads/`: do not symlink runtime directories or copy private user memories. Duplicate local bot IDs are blocked, including manual launches; this does not cover another host or a container with a separate `/tmp`. AGY state stays project-local in `data/agy_sandbox/` even with `/sandbox off`; Bubblewrap is required in both modes. Authentication and quotas for the same AGY account are shared. Legacy OMP is an external server: use separate gateway URLs/ports for independence.
 
 ### 3. Run with Docker
 
@@ -187,8 +189,8 @@ Legacy OMP does not provide this filesystem isolation: generation through OMP is
 | Command | Description |
 | :--- | :--- |
 | `/start`, `/help` | Columbina's greeting and help |
-| `/model` | Choose Gemini 3.8/3.7/3.6 Flash or Claude Sonnet/Opus 4.6 |
-| `/reasoning` | Set reasoning effort (`low`, `medium`, `high`) |
+| `/model` | Choose Gemini 3.8/3.7/3.6 Flash or Claude Sonnet/Opus 4.6 (owner only) |
+| `/reasoning` | Set reasoning effort (`low`, `medium`, `high`; owner only) |
 | `/mood` | Current emotional state and relationship level |
 | `/memory` | View saved facts and long-term memory |
 | `/remember <fact>` | Save a fact to MemPalace |
@@ -199,9 +201,15 @@ Legacy OMP does not provide this filesystem isolation: generation through OMP is
 | `/sandbox [on\|off\|status]` | Toggle the bot-wide filesystem sandbox (owner only; ON by default) |
 | `/new` (`/reset`) | Reset short context and the live session |
 | `/conv` | Manage a conversation; Conversation ID import is for legacy OMP |
-| `/topic` (`/topics`) | Configure forum topics |
+| `/topic` (`/topics`) | Configure forum topics without a prefix (owner only) |
+| `/chats` | Group menu: add by ID/@username/link, list, remove (owner only) |
+| `/prefix [list\|reset]` | Comma-separated group prefixes; defaults: «коломбина», «клумба» (owner only) |
 | `/rp` | Interactive RP action guide |
 | `/status` | Diagnose transport, memory, and system state |
+
+To receive ordinary group messages, make the bot an administrator or disable Privacy Mode through BotFather (`/setprivacy`) and re-add it to the group. Otherwise Telegram may not deliver plain-text prefix messages.
+
+In a group, the owner can use `/chats add`; in private, `/chats add -1001234567890` or the add button. Group messages/captions must start with a prefix: `коломбина привет` or `клумба, привет`. Replies do not bypass this check. `/prefix астра, муза` replaces prefixes for ordinary groups; `/prefix reset` restores defaults. Registered `/topic` threads respond without a prefix, even when their group is also registered via `/chats`. Members must pass `TELEGRAM_ALLOWED_USERS` (or explicitly enabled `TELEGRAM_ALLOW_ALL_USERS`); settings and their buttons are owner-only. Groups use the owner's model/reasoning and separate user/chat/thread context, without retrieving private MemPalace memory. Non-owner AGY project writes are blocked even with `/sandbox off`. Reads/network are not blocked: do not enable public access for untrusted users without further isolation. The registry is stored in ignored `data/active_topics.json`.
 
 ---
 

@@ -132,59 +132,8 @@ if [ -z "$(get_env_val "MAX_OUTPUT_TOKENS")" ]; then
 fi
 
 # --- 3. Systemd Service Deployment & Launch ---
-SERVICE_NAME="geminka.service"
-SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-SERVICE_FILE="$SYSTEMD_USER_DIR/$SERVICE_NAME"
-UV_PATH="$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")"
-
-mkdir -p "$SYSTEMD_USER_DIR"
-
-if [ -f "$SERVICE_FILE" ] && grep -q "start.sh" "$SERVICE_FILE" 2>/dev/null; then
-    echo ""
-    echo "🔹 Сервис systemd $SERVICE_NAME уже существует (пересоздание не требуется)."
-else
-    echo ""
-    echo "⚙️ Настройка systemd сервиса: $SERVICE_FILE..."
-    cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=Geminka (Columbina) Telegram AI Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=$SCRIPT_DIR
-ExecStart=$SCRIPT_DIR/scripts/start.sh
-Restart=always
-RestartSec=3
-KillMode=control-group
-Environment=PYTHONUNBUFFERED=1
-Environment=PATH=$HOME/.local/bin:$HOME/.nvm/versions/node/v24.12.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
-EOF
-    systemctl --user daemon-reload
-    systemctl --user enable "$SERVICE_NAME" --quiet
-    echo "✅ Сервис $SERVICE_NAME успешно зарегистрирован и включен в автозапуск!"
-fi
-
-# Stop any rogue/manual instance running outside systemd to prevent TelegramConflictError
-OLD_PIDS=$(pgrep -f "main.py" 2>/dev/null || true)
-if [ -n "$OLD_PIDS" ]; then
-    for pid in $OLD_PIDS; do
-        if ! systemctl --user status "$SERVICE_NAME" 2>/dev/null | grep -qw "$pid"; then
-            echo "🔹 Остановка ручного процесса main.py (PID: $pid) перед запуском сервиса..."
-            kill -15 "$pid" 2>/dev/null || true
-        fi
-    done
-    sleep 1
-fi
-
-echo "🚀 Запуск systemd сервиса $SERVICE_NAME..."
-systemctl --user restart "$SERVICE_NAME"
+SERVICE_NAME=$(python3 "$SCRIPT_DIR/scripts/deploy_service.py")
+echo "🚀 Systemd сервис проекта: $SERVICE_NAME"
 
 # Disarm cleanup trap so background processes and gateway remain active
 trap - EXIT
@@ -198,10 +147,10 @@ if systemctl --user is-active --quiet "$SERVICE_NAME"; then
     echo "  🌸 Бот теперь работает в фоновом автономном режиме 24/7."
     echo ""
     echo "  Полезные команды:"
-    echo "    • Статус:      systemctl --user status geminka"
-    echo "    • Логи:        journalctl --user -u geminka -f"
-    echo "    • Перезапуск:  systemctl --user restart geminka"
-    echo "    • Остановка:   systemctl --user stop geminka"
+    echo "    • Статус:      systemctl --user status $SERVICE_NAME"
+    echo "    • Логи:        journalctl --user -u $SERVICE_NAME -f"
+    echo "    • Перезапуск:  systemctl --user restart $SERVICE_NAME"
+    echo "    • Остановка:   systemctl --user stop $SERVICE_NAME"
     echo "================================================================="
 else
     echo ""

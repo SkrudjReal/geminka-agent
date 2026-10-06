@@ -8,7 +8,7 @@ class SandboxError(RuntimeError):
     pass
 
 
-def sandbox_command(command: list[str], project_dir: Path) -> list[str]:
+def sandbox_command(command: list[str], project_dir: Path, *, read_only: bool = False) -> list[str]:
     bwrap = shutil.which("bwrap")
     if not bwrap:
         raise SandboxError("Sandbox требует bubblewrap (bwrap). Установи: sudo apt install bubblewrap")
@@ -20,14 +20,19 @@ def sandbox_command(command: list[str], project_dir: Path) -> list[str]:
         "--unshare-ipc", "--unshare-uts", "--cap-drop", "ALL",
         "--ro-bind", "/", "/",
         "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev",
-        "--bind", str(root), str(root),
+        "--ro-bind" if read_only else "--bind", str(root), str(root),
         "--chdir", str(root), "--", *command,
     ]
 
 
-def agy_sandbox_command(command: list[str], project_dir: Path) -> list[str]:
+def agy_sandbox_command(
+    command: list[str], project_dir: Path, *, restricted: bool = True, read_only: bool = False,
+) -> list[str]:
     """Redirect mutable AGY state into the project; keep installed tools read-only."""
-    wrapped = sandbox_command(command, project_dir)
+    wrapped = sandbox_command(command, project_dir, read_only=read_only)
+    if not restricted:
+        # Keep project-specific AGY state without imposing host write restrictions.
+        wrapped[wrapped.index("--ro-bind")] = "--bind"
     source = Path.home() / ".gemini" / "antigravity-cli"
     if not source.is_dir():
         raise SandboxError("Сначала установи и авторизуй agy CLI: его runtime-папка не найдена.")
@@ -52,7 +57,7 @@ def agy_sandbox_command(command: list[str], project_dir: Path) -> list[str]:
         if (source / name).is_dir():
             mounts.extend(["--ro-bind", str(source / name), str(source / name)])
     # Prevent tool calls from rewriting the owner's policy or credentials.
-    for path in (project_dir / ".env", project_dir / "data" / "state.db"):
+    for path in ((project_dir / ".env", project_dir / "data" / "state.db") if restricted else ()):
         for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
             if candidate.is_file():
                 mounts.extend(["--ro-bind", str(candidate), str(candidate)])

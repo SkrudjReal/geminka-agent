@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import random
+import re
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
@@ -19,7 +20,7 @@ from aiogram.types import (
 from aiogram.utils.chat_action import ChatActionSender
 
 from app.bot.helpers import extract_message_context, send_response
-from app.bot.middlewares import check_auth
+from app.bot.middlewares import check_auth, is_owner
 from app.core import config
 from app.core.concurrency import user_locks
 from app.core.state import state_store
@@ -40,6 +41,10 @@ router = Router()
 
 class TopicStates(StatesGroup):
     waiting_for_link = State()
+
+
+class ChatStates(StatesGroup):
+    waiting_for_chat = State()
 # --- Telegram Reactions Handler ---
 @router.message_reaction()
 async def handle_message_reaction(event: types.MessageReactionUpdated, bot: Bot):
@@ -115,6 +120,8 @@ async def cmd_start(message: types.Message):
         '• `/sandbox` — 🛡️ ограничения файлов проекта (`on` / `off` / `status`, только владелец)\n'
         '• `/rp` — 🌸 Справочник интерактивных ролевых действий и команд\n'
         '• `/topic` — ⚙️ Настройка чатов топиков (Forum Threads)\n'
+        '• `/chats` — 💬 Разрешённые группы (только владелец)\n'
+        '• `/prefix` — 🌸 Префиксы обычных групп (только владелец)\n'
         '• `/conv <id>` — 💬 Переключить legacy-диалог (при OMP-транспорте)\n'
         '• `/new` — 🔄 Начать новый диалог с чистого листа (сброс истории)\n'
         '• `/status` — 📊 Полный статус agy CLI и параметров подключения\n'
@@ -126,7 +133,7 @@ async def cmd_start(message: types.Message):
 
 @router.message(Command("model", "models"))
 async def cmd_model(message: types.Message, antigravity_client: AntigravityClient):
-    if not check_auth(message.from_user.id):
+    if not is_owner(message.from_user.id) or not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
 
@@ -203,6 +210,9 @@ async def cmd_model(message: types.Message, antigravity_client: AntigravityClien
 
 @router.callback_query(F.data.startswith("set_model:"))
 async def process_set_model(callback: types.CallbackQuery, antigravity_client: AntigravityClient):
+    if not is_owner(callback.from_user.id) or not check_auth(callback.from_user.id):
+        await callback.answer("⛔ Только владелец может менять модель.", show_alert=True)
+        return
     model_name = callback.data.split(":", 1)[1]
     if model_name not in AVAILABLE_MODELS:
         await callback.answer("Неизвестная модель", show_alert=True)
@@ -220,7 +230,7 @@ async def process_set_model(callback: types.CallbackQuery, antigravity_client: A
 
 @router.message(Command("reasoning", "effort", "thinking"))
 async def cmd_reasoning(message: types.Message, antigravity_client: AntigravityClient):
-    if not check_auth(message.from_user.id):
+    if not is_owner(message.from_user.id) or not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
 
@@ -279,6 +289,9 @@ async def cmd_reasoning(message: types.Message, antigravity_client: AntigravityC
 
 @router.callback_query(F.data.startswith("set_reasoning:"))
 async def process_set_reasoning(callback: types.CallbackQuery, antigravity_client: AntigravityClient):
+    if not is_owner(callback.from_user.id) or not check_auth(callback.from_user.id):
+        await callback.answer("⛔ Только владелец может менять reasoning.", show_alert=True)
+        return
     effort_val = callback.data.split(":", 1)[1]
     if effort_val not in {"low", "medium", "high"}:
         await callback.answer("Неизвестный уровень", show_alert=True)
@@ -622,6 +635,8 @@ async def cmd_help(message: types.Message):
         '• `/sandbox` — файловая песочница (`on` / `off` / `status`, только владелец)\n'
         '• `/rp` — список интерактивных ролевых действий\n'
         '• `/topic` — настройка и управление чатами топиков\n'
+        '• `/chats` — подключить или отключить группы (только владелец)\n'
+        '• `/prefix` — префиксы обычных групп; для /topic не нужны\n'
         '• `/new` — начать новый диалог (очистить контекстное окно)\n'
         '• `/status` — статус agy CLI, памяти и параметров\n\n'
         '✨ **Особенности:**\n'
@@ -632,9 +647,141 @@ async def cmd_help(message: types.Message):
     await send_response(message, help_text)
 
 
+async def show_chats(message: types.Message) -> None:
+    chats = topic_manager.get_active_chats()
+    lines = ["🌸 <b>Разрешённые чаты</b>"]
+    rows = [[InlineKeyboardButton(text="➕ Добавить чат", callback_data="chats:add")]]
+    for chat in chats[:30]:
+        cid = chat["chat_id"]
+        title = str(chat["chat_title"])
+        lines.append(f"• {html.escape(title[:80])} — <code>{cid}</code>")
+        rows.append([InlineKeyboardButton(text=f"🗑 {title[:30]}", callback_data=f"chats:del:{cid}")])
+    if not chats:
+        lines.append("Пока нет подключённых чатов.")
+    if len(chats) > 30:
+        lines.append("Показаны первые 30; остальные можно отключить через /chats remove &lt;id&gt;.")
+    prefixes = ", ".join(topic_manager.data["prefixes"])
+    lines.append(f"\nПрефиксы: <b>{html.escape(prefixes)}</b>.\n"
+                 "Пример: <code>коломбина привет</code>.\n"
+                 "/chats add &lt;id или @username&gt; · /chats remove &lt;id&gt;\n"
+                 "В группе /chats add подключает текущий чат. Топики /topic работают без префикса.")
+    await message.answer("\n".join(lines), parse_mode=ParseMode.HTML,
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def add_group_chat(message: types.Message, bot: Bot, target: str) -> bool:
+    target = target.strip()
+    if not target and message.chat.type in {"group", "supergroup"}:
+        target = str(message.chat.id)
+    if not target:
+        await message.answer("Пришли отрицательный ID группы, @username или публичную ссылку t.me.")
+        return False
+    match = re.fullmatch(r"(?:https?://)?t\.me/c/(\d+)(?:/\d+)*", target)
+    if match:
+        target = "-100" + match.group(1)
+    else:
+        match = re.fullmatch(r"(?:https?://)?t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?", target)
+        if match:
+            target = "@" + match.group(1)
+    identifier = int(target) if re.fullmatch(r"-\d+", target) else target
+    if not isinstance(identifier, int) and not re.fullmatch(r"@[A-Za-z][A-Za-z0-9_]{3,}", identifier):
+        await message.answer("Нужен отрицательный ID группы или @username. Для приватной группы используй ID, не invite-ссылку.")
+        return False
+    try:
+        chat = await bot.get_chat(identifier)
+        if chat.type not in {"group", "supergroup"}:
+            await message.answer("Можно подключать только группы и супергруппы, не каналы или личку.")
+            return False
+        present, title = await topic_manager.check_bot_in_chat(bot, chat.id)
+        if not present:
+            await message.answer("Добавь бота в эту группу и разреши ему отправлять сообщения, затем повтори.")
+            return False
+        topic_manager.add_chat(chat.id, title, message.from_user.id)
+    except Exception as exc:
+        logger.warning("Failed to configure group: %s", exc)
+        await message.answer("Не удалось проверить или сохранить чат. Проверь ID и права бота.")
+        return False
+    await message.answer(f"✅ Чат подключён: {html.escape(title)} (<code>{chat.id}</code>). "
+                         "Отвечаю на обращения с префиксом; в подключённых /topic он не нужен.\n"
+                         "Чтобы получать обычные сообщения, сделай бота администратором группы "
+                         "или отключи Privacy Mode через BotFather (/setprivacy); при смене режима пере-добавь бота.",
+                         parse_mode=ParseMode.HTML)
+    return True
+
+
+@router.message(Command("chats"))
+async def cmd_chats(message: types.Message, command: CommandObject, state: FSMContext, bot: Bot):
+    if not message.from_user or not is_owner(message.from_user.id) or not check_auth(message.from_user.id):
+        await message.answer("⛔ Чаты настраивает только владелец.")
+        return
+    await state.clear()
+    action, _, target = (command.args or "").strip().partition(" ")
+    if action == "add":
+        if target or message.chat.type in {"group", "supergroup"}:
+            await add_group_chat(message, bot, target)
+        else:
+            await state.set_state(ChatStates.waiting_for_chat)
+            await message.answer("Пришли ID группы, @username или публичную ссылку. /chats — отмена.")
+    elif action in {"remove", "del"}:
+        if not re.fullmatch(r"-\d+", target.strip()):
+            await message.answer("Использование: /chats remove <отрицательный ID группы>")
+            return
+        topic_manager.remove_chat(int(target))
+        await show_chats(message)
+    elif action in {"", "list"}:
+        await show_chats(message)
+    else:
+        await message.answer("Использование: /chats [list | add <id/@username> | remove <id>]")
+
+
+@router.callback_query(F.data.startswith("chats:"))
+async def cb_chats(callback: types.CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id) or not check_auth(callback.from_user.id):
+        await callback.answer("⛔ Только владелец.", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer()
+        return
+    action = (callback.data or "").split(":")
+    await state.clear()
+    if action == ["chats", "add"]:
+        await state.set_state(ChatStates.waiting_for_chat)
+        await callback.message.answer("Пришли ID группы, @username или публичную ссылку. /chats — отмена.")
+    elif len(action) == 3 and action[1] == "del" and re.fullmatch(r"-\d+", action[2]):
+        topic_manager.remove_chat(int(action[2]))
+        await show_chats(callback.message)
+    await callback.answer()
+
+
+@router.message(ChatStates.waiting_for_chat, F.text, ~F.text.startswith("/"))
+async def process_chat_target(message: types.Message, state: FSMContext, bot: Bot):
+    if not message.from_user or not is_owner(message.from_user.id) or not check_auth(message.from_user.id):
+        return
+    if await add_group_chat(message, bot, message.text or ""):
+        await state.clear()
+
+
+@router.message(Command("prefix"))
+async def cmd_prefix(message: types.Message, command: CommandObject):
+    if not message.from_user or not is_owner(message.from_user.id) or not check_auth(message.from_user.id):
+        await message.answer("⛔ Префиксы настраивает только владелец.")
+        return
+    args = (command.args or "").strip()
+    if args:
+        try:
+            topic_manager.set_prefixes(["коломбина", "клумба"] if args.lower() == "reset" else args.split(","))
+        except ValueError as exc:
+            await message.answer(html.escape(str(exc)), parse_mode=ParseMode.HTML)
+            return
+    prefixes = html.escape(", ".join(topic_manager.data["prefixes"]))
+    await message.answer(f"🌸 Префиксы чатов: <b>{prefixes}</b>\n"
+                         "/prefix коломбина, клумба — заменить список\n/prefix reset — вернуть стандартные\n"
+                         "Для топиков /topic префикс не требуется.", parse_mode=ParseMode.HTML)
+
+
 @router.message(Command("topic", "topics"))
 async def cmd_topic(message: types.Message, state: FSMContext):
-    if not check_auth(message.from_user.id):
+    if not is_owner(message.from_user.id) or not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
 
@@ -871,10 +1018,11 @@ async def handle_any_message(
     bot: Bot,
     antigravity_client: AntigravityClient,
 ):
-    if not check_auth(message.from_user.id):
-        # Check if message is in an active topic
-        if not (message.chat.type in ["group", "supergroup"] and topic_manager.is_topic_active(message.chat.id, message.message_thread_id)):
-            await message.answer("⛔ Доступ ограничен.")
+    if not message.from_user or not check_auth(message.from_user.id):
+        return
+    group = message.chat.type in {"group", "supergroup"}
+    if group and not topic_manager.is_topic_active(message.chat.id, message.message_thread_id):
+        if not topic_manager.is_chat_active(message.chat.id) or topic_manager.strip_prefix(message.text or message.caption or "") is None:
             return
 
     debug_mode = state_store.is_debug_mode(message.from_user.id)
@@ -884,6 +1032,8 @@ async def handle_any_message(
 
     # 1. Check for Inbound RP Command
     user_text = message.text or message.caption or ""
+    if group and not topic_manager.is_topic_active(message.chat.id, message.message_thread_id):
+        user_text = topic_manager.strip_prefix(user_text) or ""
     rp_info = detect_rp_command(user_text)
     user_mention = f'<b><a href="tg://user?id={message.from_user.id}">{html.escape(message.from_user.first_name)}</a></b>'
 
@@ -977,6 +1127,7 @@ async def handle_any_message(
                     "key": f"tg:{message.chat.id}:{message.message_id}",
                     "date": message.date.isoformat(),
                     "chat_id": message.chat.id,
+                    "thread_id": message.message_thread_id,
                     "media": str(message.content_type),
                     "name": message.from_user.full_name,
                     "username": message.from_user.username or "",

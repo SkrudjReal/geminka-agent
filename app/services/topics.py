@@ -25,6 +25,8 @@ class TopicManager:
     def __init__(self, storage_file: Path = TOPICS_FILE):
         self.storage_file = storage_file
         self.data: Dict[str, Any] = {
+            "chats": {},
+            "prefixes": ["коломбина", "клумба"],
             "topics": {}  # "chat_id:topic_id" -> {chat_id, topic_id, chat_title, added_by, created_at}
         }
         self.load()
@@ -35,15 +37,14 @@ class TopicManager:
                 saved = load_json(self.storage_file, {})
                 if "topics" in saved:
                     self.data["topics"] = saved["topics"]
+                self.data["chats"] = saved.get("chats", {})
+                self.data["prefixes"] = saved.get("prefixes", ["коломбина", "клумба"])
                 logger.info(f"TopicManager loaded {len(self.data['topics'])} active topics.")
             except Exception as e:
                 logger.warning(f"Failed to load topics: {e}")
 
     def save(self) -> None:
-        try:
-            atomic_write_json(self.storage_file, self.data)
-        except Exception as e:
-            logger.warning(f"Failed to save topics: {e}")
+        atomic_write_json(self.storage_file, self.data)
 
     @staticmethod
     def parse_topic_link(raw_input: str) -> Optional[Tuple[int, int]]:
@@ -131,6 +132,47 @@ class TopicManager:
 
     def get_active_topics(self) -> List[Dict[str, Any]]:
         return list(self.data["topics"].values())
+
+    def add_chat(self, chat_id: int, chat_title: str, added_by: int) -> None:
+        if chat_id >= 0:
+            raise ValueError("Only group chat IDs can be registered")
+        chats = dict(self.data["chats"])
+        chats[str(chat_id)] = {
+            "chat_id": chat_id, "chat_title": chat_title,
+            "added_by": added_by, "created_at": time.time(),
+        }
+        self._update("chats", chats)
+
+    def remove_chat(self, chat_id: int) -> None:
+        chats = dict(self.data["chats"])
+        chats.pop(str(chat_id), None)
+        self._update("chats", chats)
+
+    def _update(self, key: str, value: Any) -> None:
+        updated = {**self.data, key: value}
+        atomic_write_json(self.storage_file, updated)
+        self.data = updated
+
+    def is_chat_active(self, chat_id: int) -> bool:
+        return str(chat_id) in self.data["chats"]
+
+    def get_active_chats(self) -> List[Dict[str, Any]]:
+        return list(self.data["chats"].values())
+
+    def set_prefixes(self, prefixes: list[str]) -> None:
+        normalized = list(dict.fromkeys(p.strip().casefold() for p in prefixes))
+        if not 1 <= len(normalized) <= 10 or any(
+            not p or len(p) > 64 or p.startswith("/") or "\n" in p for p in normalized
+        ):
+            raise ValueError("Нужны 1–10 непустых префиксов до 64 символов, не начинающихся с /.")
+        self._update("prefixes", normalized)
+
+    def strip_prefix(self, text: str) -> str | None:
+        alternatives = "|".join(re.escape(p) for p in sorted(self.data["prefixes"], key=len, reverse=True))
+        matched = re.match(
+            rf"^(?:{alternatives})(?=$|[\s,:!?.—-])[\s,:!?.—-]*", text.strip(), re.IGNORECASE,
+        )
+        return text.strip()[matched.end():] if matched else None
 
 
 topic_manager = TopicManager()

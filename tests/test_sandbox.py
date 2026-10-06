@@ -67,14 +67,14 @@ async def test_owner_command_and_denied_users(monkeypatch, tmp_path):
 
 def test_launch_flags_and_fail_closed(monkeypatch, tmp_path):
     client = AgyCliClient(project_dir=tmp_path)
-    monkeypatch.setattr("app.services.agy_cli.agy_sandbox_command", lambda args, root: ["bwrap", *args])
+    monkeypatch.setattr("app.services.agy_cli.agy_sandbox_command", lambda args, root, **kwargs: ["bwrap", *args])
     args = client._launch_command("gemini", "high")
     assert args[0] == "bwrap" and "--sandbox" in args
     assert args[args.index("--mode") + 1] == "accept-edits"
     assert "--dangerously-skip-permissions" not in args
     client.sandbox_enabled = False
     assert "--sandbox" not in client._launch_command("gemini", "high")
-    assert client._launch_command("gemini", "high")[0] == client.command
+    assert client._launch_command("gemini", "high")[0] == "bwrap"
     client.sandbox_enabled = True
     monkeypatch.undo()
     monkeypatch.setattr("app.services.sandbox.shutil.which", lambda name: None)

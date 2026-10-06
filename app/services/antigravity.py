@@ -261,13 +261,14 @@ class AntigravityClient:
         """Stream a model reply through the selected direct or legacy transport."""
         if not self._agy and config.settings.transport == "omp" and self.store.is_sandbox_enabled():
             raise GatewayError("Sandbox требует прямой agy-транспорт. OMP не обеспечивает изоляцию сервера.")
-        model = self.get_user_model(user_id)
-        reasoning_effort = self._ensure_reasoning_effort(model, self.get_user_reasoning(user_id))
-        debug_mode = self.store.is_debug_mode(user_id)
         use_memory = memory_input is None or memory_input.get("private", True)
+        settings_user = user_id if use_memory else (config.settings.owner_user_id or user_id)
+        model = self.get_user_model(settings_user)
+        reasoning_effort = self._ensure_reasoning_effort(model, self.get_user_reasoning(settings_user))
+        debug_mode = self.store.is_debug_mode(user_id)
         context_id = user_id
         if not use_memory:
-            scope = f"{user_id}:{memory_input.get('chat_id', '')}"
+            scope = f"{user_id}:{memory_input.get('chat_id', '')}:{memory_input.get('thread_id', '')}"
             context_id = -int(hashlib.sha256(scope.encode()).hexdigest()[:15], 16) - 1
         # Debug traffic must not continue or create a server-side persisted cascade.
         convo_id = None if debug_mode else self.store.get_conversation_id(context_id)
