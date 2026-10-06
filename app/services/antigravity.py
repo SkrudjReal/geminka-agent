@@ -88,6 +88,7 @@ class AntigravityClient:
         )
         self._agy = None if self._use_legacy_omp else AgyCliClient(
             timeout_seconds=config.settings.request_timeout_seconds,
+            sandbox_enabled=store.is_sandbox_enabled(),
         )
         self.base_url = (base_url or config.settings.omp_base_url).rstrip("/")
         self.store = store
@@ -115,6 +116,13 @@ class AntigravityClient:
             await self._agy.aclose()
         elif self._owns_client and self._client:
             await self._client.aclose()
+
+    async def set_sandbox_mode(self, requester_id: int, enabled: bool) -> None:
+        if requester_id != config.settings.owner_user_id:
+            raise PermissionError("Sandbox может переключать только владелец.")
+        self.store.set_sandbox_enabled(enabled)
+        if self._agy:
+            await self._agy.set_sandbox_mode(enabled)
 
     def get_user_model(self, user_id: int) -> str:
         return self.store.get_preferences(user_id)["model"] or config.settings.default_model
@@ -251,6 +259,8 @@ class AntigravityClient:
         memory_input: dict | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream a model reply through the selected direct or legacy transport."""
+        if not self._agy and config.settings.transport == "omp" and self.store.is_sandbox_enabled():
+            raise GatewayError("Sandbox требует прямой agy-транспорт. OMP не обеспечивает изоляцию сервера.")
         model = self.get_user_model(user_id)
         reasoning_effort = self._ensure_reasoning_effort(model, self.get_user_reasoning(user_id))
         debug_mode = self.store.is_debug_mode(user_id)
@@ -275,7 +285,10 @@ class AntigravityClient:
             f"• Активный уровень Reasoning Effort: {reasoning_effort.upper()} ({reasoning_desc}).\n"
             f"• Текущий Telegram chat_id: {memory_input.get('chat_id', user_id) if memory_input else user_id}.\n"
             f"• Право на вызов Bot API по явному запросу: "
-            f"{'ДА' if config.settings.owner_user_id == user_id else 'НЕТ'}."
+            f"{'ДА' if config.settings.owner_user_id == user_id else 'НЕТ'}.\n"
+            f"• Sandbox: {'ON' if self.store.is_sandbox_enabled() else 'OFF'}. "
+            f"При ON запись файлов разрешена только внутри проекта {config.BASE_DIR}; "
+            "переключать режим может только владелец командой /sandbox."
         )
 
         memory_context = ""
@@ -492,6 +505,8 @@ class AntigravityClient:
 
     async def _memory_completion(self, user_id: int, system: str, text: str) -> str:
         """Isolated SSE call: no chat session, tools, persona or recursive memorization."""
+        if not self._agy and config.settings.transport == "omp" and self.store.is_sandbox_enabled():
+            raise GatewayError("Sandbox требует прямой agy-транспорт.")
         if self._agy:
             result: list[str] = []
             async for token in self._agy.stream(

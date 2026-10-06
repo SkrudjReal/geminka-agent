@@ -31,6 +31,7 @@ async def setup_bot_commands(bot: Bot) -> None:
         BotCommand(command="recall", description="🔎 Поиск по долговременной памяти"),
         BotCommand(command="forget", description="🗑 Удалить мою личную память"),
         BotCommand(command="debug", description="🧪 Временно отключить запись памяти"),
+        BotCommand(command="sandbox", description="🛡️ Файловая песочница (только владелец)"),
         BotCommand(command="rp", description="🌸 Справочник интерактивных RP-действий"),
         BotCommand(command="topic", description="⚙️ Настройка чатов топиков (Forum Threads)"),
         BotCommand(command="conv", description="💬 Переключить диалог/сессию по ID"),

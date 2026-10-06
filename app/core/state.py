@@ -53,6 +53,11 @@ class StateStore:
                     updated_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS runtime_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS conversation_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -78,6 +83,21 @@ class StateStore:
                 """
             )
             self._ensure_preference_columns(connection)
+
+    def is_sandbox_enabled(self) -> bool:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM runtime_settings WHERE key = 'sandbox'"
+            ).fetchone()
+        return row is None or row["value"] != "off"
+
+    def set_sandbox_enabled(self, enabled: bool) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT INTO runtime_settings(key, value) VALUES('sandbox', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("on" if enabled else "off",),
+            )
 
     def get_preferences(self, user_id: int) -> dict[str, str | bool | None]:
         with self._lock, self._connect() as connection:

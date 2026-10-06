@@ -16,6 +16,8 @@ from collections.abc import AsyncGenerator, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.services.sandbox import SandboxError, agy_sandbox_command
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +53,7 @@ class _Session:
     instructions: str = ""
     stderr_task: asyncio.Task[None] | None = None
     tool_context: tuple[tuple[str, str], ...] = ()
+    sandbox_enabled: bool = True
 
 
 class AgyCliClient:
@@ -62,17 +65,47 @@ class AgyCliClient:
         command: str | None = None,
         project_dir: Path | None = None,
         timeout_seconds: int = 180,
+        sandbox_enabled: bool = True,
     ) -> None:
         configured = command or os.getenv("AGY_CLI_PATH", "agy")
         self.command = shutil.which(configured) or configured
         self.project_dir = project_dir or Path(__file__).resolve().parents[2]
         self.timeout_seconds = timeout_seconds
         self._sessions: dict[int, _Session] = {}
+        self.sandbox_enabled = sandbox_enabled
+        self._one_shots: dict[int, _Session] = {}
+        self._lifecycle_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
-        sessions = list(self._sessions.values())
+        async with self._lifecycle_lock:
+            await self._close_all()
+
+    async def _close_all(self) -> None:
+        sessions = [*self._sessions.values(), *self._one_shots.values()]
         self._sessions.clear()
+        self._one_shots.clear()
         await asyncio.gather(*(self._close_session(session) for session in sessions))
+
+    async def set_sandbox_mode(self, enabled: bool) -> None:
+        async with self._lifecycle_lock:
+            self.sandbox_enabled = enabled
+            await self._close_all()
+
+    def _sandbox_command(self, args: list[str]) -> list[str]:
+        if not self.sandbox_enabled:
+            return [self.command, *args]
+        try:
+            return agy_sandbox_command([self.command, "--sandbox", *args], self.project_dir)
+        except (SandboxError, OSError) as exc:
+            raise AgyCliError(str(exc)) from exc
+
+    def _launch_command(self, model: str, effort: str) -> list[str]:
+        return self._sandbox_command([
+            "--print=", "--input-format", "stream-json", "--output-format", "stream-json",
+            "--model", model, "--effort", effort, "--mode", "accept-edits",
+            "--add-dir", str(self.project_dir), "--disable-slash-commands",
+            "--print-timeout", f"{self.timeout_seconds}s",
+        ])
 
     def reset_user(self, user_id: int) -> None:
         session = self._sessions.pop(user_id, None)
@@ -85,30 +118,28 @@ class AgyCliClient:
             return False
         try:
             process = await asyncio.create_subprocess_exec(
-                self.command,
-                "models",
+                *self._sandbox_command(["models"]),
                 cwd=self.project_dir,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=20)
-        except (OSError, asyncio.TimeoutError):
+        except (OSError, asyncio.TimeoutError, AgyCliError):
             return False
         return process.returncode == 0 and b"gemini-" in stdout
 
     async def list_models(self) -> list[str]:
         try:
             process = await asyncio.create_subprocess_exec(
-                self.command,
-                "models",
+                *self._sandbox_command(["models"]),
                 cwd=self.project_dir,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=20)
-        except (OSError, asyncio.TimeoutError):
+        except (OSError, asyncio.TimeoutError, AgyCliError):
             return []
 
         result: list[str] = []
@@ -170,7 +201,8 @@ class AgyCliClient:
                 session.started = True
                 session.instructions = instructions
             except (AgyCliError, asyncio.TimeoutError):
-                self._sessions.pop(user_id, None)
+                if self._sessions.get(user_id) is session:
+                    self._sessions.pop(user_id, None)
                 await self._close_session(session)
                 raise
 
@@ -181,6 +213,13 @@ class AgyCliClient:
         effort: str,
         tool_context: Mapping[str, str] | None = None,
     ) -> _Session:
+        async with self._lifecycle_lock:
+            return await self._get_session_locked(user_id, model, effort, tool_context)
+
+    async def _get_session_locked(
+        self, user_id: int, model: str, effort: str,
+        tool_context: Mapping[str, str] | None = None,
+    ) -> _Session:
         context_signature = self._tool_context_signature(tool_context)
         current = self._sessions.get(user_id)
         if (
@@ -188,27 +227,14 @@ class AgyCliClient:
             and current.process.returncode is None
             and (current.model, current.effort) == (model, effort)
             and current.tool_context == context_signature
+            and current.sandbox_enabled == self.sandbox_enabled
         ):
             return current
         if current:
             await self._close_session(current)
 
         process = await asyncio.create_subprocess_exec(
-            self.command,
-            "--print=",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--model",
-            model,
-            "--effort",
-            effort,
-            "--add-dir",
-            str(self.project_dir),
-            "--disable-slash-commands",
-            "--print-timeout",
-            f"{self.timeout_seconds}s",
+            *self._launch_command(model, effort),
             cwd=self.project_dir,
             env=self._tool_env(tool_context),
             stdin=asyncio.subprocess.PIPE,
@@ -216,7 +242,8 @@ class AgyCliClient:
             stderr=asyncio.subprocess.PIPE,
         )
         session = _Session(
-            process, model, effort, asyncio.Lock(), tool_context=context_signature
+            process, model, effort, asyncio.Lock(), tool_context=context_signature,
+            sandbox_enabled=self.sandbox_enabled,
         )
         session.stderr_task = asyncio.create_task(self._drain_stderr(session))
         self._sessions[user_id] = session
@@ -229,36 +256,22 @@ class AgyCliClient:
         prompt: str,
         tool_context: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
-        process = await asyncio.create_subprocess_exec(
-            self.command,
-            "--print=",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--model",
-            model,
-            "--effort",
-            effort,
-            "--add-dir",
-            str(self.project_dir),
-            "--disable-slash-commands",
-            "--print-timeout",
-            f"{self.timeout_seconds}s",
-            cwd=self.project_dir,
-            env=self._tool_env(tool_context),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        session = _Session(
-            process,
-            model,
-            effort,
-            asyncio.Lock(),
-            tool_context=self._tool_context_signature(tool_context),
-        )
-        session.stderr_task = asyncio.create_task(self._drain_stderr(session))
+        async with self._lifecycle_lock:
+            process = await asyncio.create_subprocess_exec(
+                *self._launch_command(model, effort),
+                cwd=self.project_dir,
+                env=self._tool_env(tool_context),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            session = _Session(
+                process, model, effort, asyncio.Lock(),
+                tool_context=self._tool_context_signature(tool_context),
+                sandbox_enabled=self.sandbox_enabled,
+            )
+            session.stderr_task = asyncio.create_task(self._drain_stderr(session))
+            self._one_shots[id(session)] = session
         try:
             if process.stdin is None:
                 raise AgyCliError("agy CLI не открыл stdin")
@@ -273,6 +286,7 @@ class AgyCliClient:
                 yield token
             await asyncio.wait_for(process.wait(), timeout=10)
         finally:
+            self._one_shots.pop(id(session), None)
             await self._close_session(session)
 
     @staticmethod
@@ -342,11 +356,17 @@ class AgyCliClient:
 
     async def _close_session(self, session: _Session) -> None:
         if session.process.returncode is None:
-            session.process.terminate()
+            try:
+                session.process.terminate()
+            except ProcessLookupError:
+                pass
             try:
                 await asyncio.wait_for(session.process.wait(), timeout=3)
             except asyncio.TimeoutError:
-                session.process.kill()
+                try:
+                    session.process.kill()
+                except ProcessLookupError:
+                    pass
                 await session.process.wait()
         if session.stderr_task:
             session.stderr_task.cancel()

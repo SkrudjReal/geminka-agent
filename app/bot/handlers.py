@@ -65,6 +65,38 @@ async def handle_message_reaction(event: types.MessageReactionUpdated, bot: Bot)
 
 
 # --- Command Handlers ---
+@router.message(Command("sandbox"))
+async def cmd_sandbox(
+    message: types.Message, command: CommandObject, antigravity_client: AntigravityClient,
+):
+    if (
+        message.from_user is None
+        or message.from_user.id != config.settings.owner_user_id
+        or not check_auth(message.from_user.id)
+        or message.chat.type != "private"
+    ):
+        await message.answer("⛔ /sandbox доступна только владельцу в личном чате.")
+        return
+    current = antigravity_client.store.is_sandbox_enabled()
+    arg = (command.args or "").strip().lower()
+    if arg == "status":
+        await message.answer(f"🛡️ Sandbox: {'ON' if current else 'OFF'} (для всего бота).")
+        return
+    if arg not in {"", "on", "off"}:
+        await message.answer("Использование: /sandbox, /sandbox on, /sandbox off, /sandbox status")
+        return
+    enabled = not current if not arg else arg == "on"
+    if enabled != current:
+        await antigravity_client.set_sandbox_mode(message.from_user.id, enabled)
+    await message.answer(
+        "🛡️ Sandbox ON. Запись файлов ограничена папкой проекта. "
+        "Live-процессы agy используют выбранный режим; сохранённая история остаётся."
+        if enabled else
+        "🔓 Sandbox OFF. Файловые ограничения Geminka сняты для всего бота; "
+        "действуют права agy и Linux-пользователя. Вернуть ограничения: /sandbox on"
+    )
+
+
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
     if not check_auth(message.from_user.id):
@@ -80,6 +112,7 @@ async def cmd_start(message: types.Message):
         '• `/memory` — 📖 Долговременная память, сохранённые факты и контекст\n'
         '• `/remember <текст>` — 💡 Запомнить важный факт о тебе в базу данных\n'
         '• `/debug` — 🧪 переключить режим без записи новой памяти (`on` / `off`)\n'
+        '• `/sandbox` — 🛡️ ограничения файлов проекта (`on` / `off` / `status`, только владелец)\n'
         '• `/rp` — 🌸 Справочник интерактивных ролевых действий и команд\n'
         '• `/topic` — ⚙️ Настройка чатов топиков (Forum Threads)\n'
         '• `/conv <id>` — 💬 Переключить legacy-диалог (при OMP-транспорте)\n'
@@ -586,6 +619,7 @@ async def cmd_help(message: types.Message):
         '• `/memory` — просмотр сохранённых фрагментов долговременной памяти\n'
         '• `/remember <факт>` — сохранить новый факт в личную базу данных\n'
         '• `/debug` — временно отключить запись новой памяти (`on` / `off` / `status`)\n'
+        '• `/sandbox` — файловая песочница (`on` / `off` / `status`, только владелец)\n'
         '• `/rp` — список интерактивных ролевых действий\n'
         '• `/topic` — настройка и управление чатами топиков\n'
         '• `/new` — начать новый диалог (очистить контекстное окно)\n'
