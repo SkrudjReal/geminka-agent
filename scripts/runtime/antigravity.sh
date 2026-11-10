@@ -37,11 +37,33 @@ find_wsl_antigravity_executable() {
         return 0
     fi
 
+    # Check standard Windows AppData and Program Files installation paths
+    local standard_paths=(
+        /mnt/c/Users/*/AppData/Local/Programs/"Antigravity IDE"/"Antigravity IDE.exe"
+        /mnt/c/Users/*/AppData/Local/Programs/Antigravity/"Antigravity.exe"
+        /mnt/c/Users/*/AppData/Local/Programs/antigravity/"Antigravity.exe"
+        "/mnt/c/Program Files/Antigravity IDE/Antigravity IDE.exe"
+        "/mnt/c/Program Files/Antigravity/Antigravity.exe"
+        "/mnt/c/Program Files (x86)/Antigravity IDE/Antigravity IDE.exe"
+        "/mnt/c/Program Files (x86)/Antigravity/Antigravity.exe"
+    )
+    for candidate in "${standard_paths[@]}"; do
+        if [ -f "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
     launcher=$(command -v antigravity 2>/dev/null || true)
     if [ -n "$launcher" ]; then
         resolved=$(readlink -f "$launcher" 2>/dev/null || true)
         if [ -n "$resolved" ]; then
             candidate="$(dirname "$(dirname "$resolved")")/Antigravity IDE.exe"
+            if [ -f "$candidate" ]; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+            candidate="$(dirname "$(dirname "$resolved")")/Antigravity.exe"
             if [ -f "$candidate" ]; then
                 printf '%s\n' "$candidate"
                 return 0
@@ -82,9 +104,12 @@ find_linux_antigravity_launcher() {
 
 windows_antigravity_is_running() {
     command -v tasklist.exe >/dev/null 2>&1 || return 1
-    tasklist.exe /FI 'IMAGENAME eq Antigravity IDE.exe' 2>/dev/null \
+    tasklist.exe /FI 'IMAGENAME eq Antigravity IDE.exe' < /dev/null 2>/dev/null \
         | tr -d '\r' \
-        | grep -Fq 'Antigravity IDE.exe'
+        | grep -Fq 'Antigravity IDE.exe' \
+        || tasklist.exe /FI 'IMAGENAME eq Antigravity.exe' < /dev/null 2>/dev/null \
+        | tr -d '\r' \
+        | grep -Fq 'Antigravity.exe'
 }
 
 linux_antigravity_is_running() {
@@ -111,7 +136,7 @@ launch_wsl_antigravity() {
         if [[ "$windows_executable" != *"'"* && "$remote_uri" != *"'"* ]]; then
             if powershell_output=$(powershell.exe -NoProfile -NonInteractive -Command \
                 "\$process = Start-Process -FilePath '$windows_executable' -ArgumentList @('--new-window','--folder-uri','$remote_uri') -WindowStyle Hidden -PassThru; Write-Output \$process.Id" \
-                2>>"$ANTIGRAVITY_BOOT_LOG" | tr -d '\r'); then
+                < /dev/null 2>>"$ANTIGRAVITY_BOOT_LOG" | tr -d '\r'); then
                 ANTIGRAVITY_WINDOWS_PID=$(printf '%s\n' "$powershell_output" | tail -n 1)
                 return 0
             fi
@@ -235,7 +260,7 @@ stop_antigravity_runtime() {
         && command -v powershell.exe >/dev/null 2>&1; then
         powershell.exe -NoProfile -NonInteractive -Command \
             "Stop-Process -Id $ANTIGRAVITY_WINDOWS_PID -ErrorAction SilentlyContinue" \
-            >/dev/null 2>&1 || true
+            < /dev/null >/dev/null 2>&1 || true
     fi
 
     if [[ "$ANTIGRAVITY_NATIVE_PID" =~ ^[0-9]+$ ]] \

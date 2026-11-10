@@ -90,7 +90,7 @@ def test_parallel_agy_runtime_isolation(monkeypatch, tmp_path):
     roots = [tmp_path / "first", tmp_path / "second"]
     for index, root in enumerate(roots):
         root.mkdir()
-        code = f"from pathlib import Path; Path({str(source / 'test-state')!r}).write_text({str(index)!r})"
+        code = f"from pathlib import Path; (Path.home() / '.gemini/antigravity-cli/test-state').write_text({str(index)!r})"
         processes.append(subprocess.Popen(
             agy_sandbox_command([sys.executable, "-c", code], root, restricted=not index),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,

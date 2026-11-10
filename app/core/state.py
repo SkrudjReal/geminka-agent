@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -14,14 +15,18 @@ from app.core import config
 class StateStore:
     """Persist conversation, user overrides, and curated memories."""
 
-    def __init__(self, path: Path = config.STATE_DB_FILE) -> None:
+    def __init__(self, path: Path = config.STATE_DB_FILE, *, initialize: bool = True) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._read_only = not initialize
+        if initialize:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._initialize()
+        if initialize:
+            self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5.0)
+        target = self.path.resolve().as_uri() + "?mode=ro" if self._read_only else str(self.path)
+        connection = sqlite3.connect(target, timeout=5.0, uri=self._read_only)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.execute("PRAGMA foreign_keys = ON")
@@ -275,4 +280,4 @@ class StateStore:
             return cursor.rowcount > 0
 
 
-state_store = StateStore()
+state_store = StateStore(initialize=os.getenv("GEMINKA_MCP_PROCESS") != "1")

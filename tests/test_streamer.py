@@ -11,6 +11,29 @@ from app.services.streamer import (
 )
 
 
+async def test_sticker_ids_are_resolved_and_cached_per_bot(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(streamer, "_LIVE_STICKER_IDS", {})
+    monkeypatch.setattr(streamer.asset_harvester, "get_sticker_metadata", lambda fid: {
+        "file_unique_id": "stable", "set_name": "Pack",
+    })
+    calls = []
+
+    class Bot:
+        def __init__(self, bot_id):
+            self.id = bot_id
+
+        async def get_sticker_set(self, name):
+            calls.append((self.id, name))
+            return SimpleNamespace(stickers=[SimpleNamespace(file_unique_id="stable", file_id=f"live-{self.id}")])
+
+    assert await streamer.current_sticker_file_id(Bot(1), "old") == "live-1"
+    assert await streamer.current_sticker_file_id(Bot(1), "old") == "live-1"
+    assert await streamer.current_sticker_file_id(Bot(2), "old") == "live-2"
+    assert calls == [(1, "Pack"), (2, "Pack")]
+
+
 def test_html_inside_code_fence_is_escaped() -> None:
     rendered = md_to_telegram_html("```html\n<b>unsafe</b>\n```")
     assert "&lt;b&gt;unsafe&lt;/b&gt;" in rendered

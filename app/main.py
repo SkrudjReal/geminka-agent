@@ -8,13 +8,13 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeDefault
 
+from app.bot.batching import turn_batches
 from app.bot.handlers import router
 from app.bot.middlewares import OwnerAuthMiddleware
 from app.core import config
 from app.core.instance import acquire_bot_lock
 from app.core.logger import setup_logging
 from app.services.antigravity import AntigravityClient
-from app.services.palace_memory import palace_memory
 
 logger = logging.getLogger("geminka-main")
 
@@ -59,9 +59,7 @@ async def main() -> None:
 
     # 2. The default transport is the authenticated agy CLI. Legacy OMP is opt-in.
     antigravity_client = AntigravityClient()
-    shared_chunks = await asyncio.to_thread(palace_memory.sync_shared_source)
-    imported = await asyncio.to_thread(palace_memory.migrate_legacy, config.STATE_DB_FILE, config.settings.owner_user_id)
-    logger.info("MemPalace initialized; shared context chunks=%d, migration counts: %s", shared_chunks, imported)
+    logger.info("SQLite FTS5/BM25 memory ready; no embeddings or legacy import.")
 
     if not await antigravity_client.check_omp_health():
         logger.warning("agy CLI health check failed; generation will report the direct CLI error.")
@@ -111,14 +109,14 @@ async def main() -> None:
                 logger.warning("Failed to send startup notification to %s: %s", user_id, exc)
 
     # 6. Start update polling
-    for user_id in palace_memory.known_users():
-        palace_memory.schedule_analysis(
-            user_id, lambda system, text, uid=user_id: antigravity_client._memory_completion(uid, system, text),
-        )
+    for user_id in antigravity_client.memories.known_users():
+        antigravity_client.schedule_memory_summary(user_id)
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        await turn_batches.close()
         await antigravity_client.aclose()
+        antigravity_client.memories.close()
         await bot.session.close()
 
 

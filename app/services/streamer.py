@@ -34,8 +34,10 @@ from aiogram.types import (
     ReplyParameters,
 )
 
+from app.bot.batching import StreamRestart
 from app.core import config
 from app.services.harvester import asset_harvester
+from app.services.sqlite_memory import memory as personal_memory
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,7 @@ RP_TAG_RE = re.compile(r"<tg-rp\s+([^>]+)\s*/?>", re.IGNORECASE)
 PHOTO_PAIR_TAG_RE = re.compile(r"<tg-send-photos\s*/?>|<tg-photo-pair\s*/?>", re.IGNORECASE)
 CUSTOM_PHOTO_TAG_RE = re.compile(r"<tg-photo\s+([^>]+)\s*/?>", re.IGNORECASE)
 FILE_TAG_RE = re.compile(r"<tg-file\s+([^>]+)\s*/?>", re.IGNORECASE)
+GIF_TAG_RE = re.compile(r"<tg-gif\s+([^>]+)\s*/?>", re.IGNORECASE)
 
 _BLOCKED_FILE_NAMES = {
     ".env",
@@ -182,6 +185,31 @@ def resolve_sticker_file_id(attrs_str: str, user_id: Optional[int] = None) -> Op
         return stickers[idx]["file_id"]
 
     return None
+
+
+_LIVE_STICKER_IDS: dict[tuple[int, str], tuple[float, dict[str, str]]] = {}
+
+
+async def current_sticker_file_id(bot: Bot, file_id: str) -> str:
+    """Portable catalogues store unique IDs; Telegram file IDs are bot-scoped."""
+    item = asset_harvester.get_sticker_metadata(file_id)
+    if not item:
+        item = next((row for row in get_bot_stickers() if row.get("file_id") == file_id), None)
+    if not item or not item.get("set_name") or not item.get("file_unique_id"):
+        return file_id
+    key = (bot.id, item["set_name"])
+    cached = _LIVE_STICKER_IDS.get(key)
+    if cached is None or time.monotonic() - cached[0] >= 3600:
+        try:
+            pack = await bot.get_sticker_set(item["set_name"])
+        except TelegramBadRequest:
+            # A removed/private pack can still have a valid previously received ID.
+            return file_id
+        cached = (time.monotonic(), {st.file_unique_id: st.file_id for st in pack.stickers})
+        if len(_LIVE_STICKER_IDS) >= 128:
+            _LIVE_STICKER_IDS.pop(next(iter(_LIVE_STICKER_IDS)))
+        _LIVE_STICKER_IDS[key] = cached
+    return cached[1].get(item["file_unique_id"], file_id)
 
 
 def resolve_reaction(attrs_str: str):
@@ -488,6 +516,7 @@ def strip_delivery_tags(text: str) -> str:
         PHOTO_PAIR_TAG_RE,
         CUSTOM_PHOTO_TAG_RE,
         FILE_TAG_RE,
+        GIF_TAG_RE,
     ):
         text = pattern.sub("", text)
     text = INCOMPLETE_CONTROL_TAG_RE.sub("", text)
@@ -514,7 +543,10 @@ def resolve_local_file(raw_path: str) -> Path | None:
         logger.warning("Skipping unavailable outgoing file: %s", raw_path)
         return None
 
-    if any(part in _BLOCKED_FILE_DIRS for part in relative.parts) or resolved.name.lower() in _BLOCKED_FILE_NAMES:
+    if (any(part in _BLOCKED_FILE_DIRS for part in relative.parts)
+            or resolved.name.lower() in _BLOCKED_FILE_NAMES
+            or resolved.suffix.lower() in {".db", ".sqlite", ".sqlite3"}
+            or resolved.name.endswith(("-wal", "-shm", "-journal"))):
         logger.warning("Skipping blocked outgoing file: %s", relative)
         return None
     if not resolved.is_file():
@@ -543,9 +575,10 @@ class TelegramStreamConsumer:
         target_user_mention: Optional[str] = None,
         message_thread_id: Optional[int] = None,
         edit_interval: float = 0.8,
-        cursor: str = ' <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>',
+        cursor: str = " …",
     ):
         self.bot = bot
+        self.allowed_emojis = None
         self.chat_id = chat_id
         self.user_id = user_id
         self.target_message_id = target_message_id
@@ -558,12 +591,13 @@ class TelegramStreamConsumer:
         self.last_sent_text = ""
         self.last_edit_time = 0.0
         self.should_reply = False
+        self.started_at = time.monotonic()
 
     async def _safe_send_initial(self, text: str) -> bool:
         """Sends the initial preview message."""
         preview = text if len(text) <= 3_500 else "…\n" + text[-3_498:]
-        content = (preview + self.cursor).strip() or self.cursor
-        html_content = md_to_telegram_html(content)
+        content = self._emoji_policy((preview + self.cursor).strip() or self.cursor)
+        html_content = self._format_html(content)
         reply_params = (
             ReplyParameters(message_id=self.target_message_id)
             if (self.should_reply and self.target_message_id)
@@ -580,6 +614,7 @@ class TelegramStreamConsumer:
             self.message_id = msg.message_id
             self.last_sent_text = content
             self.last_edit_time = time.monotonic()
+            logger.info("telegram first_visible_ms=%.0f", (self.last_edit_time - self.started_at) * 1000)
             return True
         except Exception:
             try:
@@ -608,11 +643,11 @@ class TelegramStreamConsumer:
             return
 
         preview = clean_text if len(clean_text) <= 3_500 else "…\n" + clean_text[-3_498:]
-        content = preview if finalize else (preview + self.cursor)
+        content = self._emoji_policy(preview if finalize else (preview + self.cursor))
         if content == self.last_sent_text and not finalize:
             return
 
-        html_content = md_to_telegram_html(content)
+        html_content = self._format_html(content)
 
         try:
             await self.bot.edit_message_text(
@@ -644,15 +679,43 @@ class TelegramStreamConsumer:
         except Exception as e:
             logger.debug(f"Unhandled edit error: {e}")
 
+    def _emoji_policy(self, text: str) -> str:
+        from app.services.personalization import allowed_emoji_ids
+
+        if self.allowed_emojis is None:
+            self.allowed_emojis = allowed_emoji_ids(self.user_id or 0, personal_memory,
+                                                   self.chat_id == self.user_id)
+        def replace(match):
+            attributes = html.unescape(match.group(1))
+            identity = re.search(r'\bemoji-id\s*=\s*(?:"(\d+)"|\'(\d+)\'|(\d+))', attributes, re.I)
+            cid = next((part for part in identity.groups() if part), None) if identity else None
+            return f'<tg-emoji emoji-id="{cid}">{match.group(2)}</tg-emoji>' if cid in self.allowed_emojis else match.group(2)
+
+        # Literal tag examples in code are escaped by the renderer, not displayed as emoji.
+        parts = re.split(r"(```[\s\S]*?```|`[^`\n]*`)", text)
+        return "".join(part if index % 2 else re.sub(r'<tg-emoji\b([^>]*)>(.*?)</tg-emoji>',
+                                                   replace, part, flags=re.DOTALL | re.IGNORECASE)
+                       for index, part in enumerate(parts))
+
+    def _format_html(self, text: str) -> str:
+        return md_to_telegram_html(self._emoji_policy(text))
+
     async def _consume_live_tokens(self, token_generator: AsyncGenerator[str, None]) -> None:
         try:
             async for chunk in token_generator:
+                if isinstance(chunk, StreamRestart):
+                    self.allowed_emojis = None
+                    self.accumulated = ""
+                    self.should_reply = False
+                    if self.message_id:
+                        await self._safe_edit("…", finalize=False)
+                    continue
                 if not chunk:
                     continue
                 self.accumulated += chunk
                 if REPLY_TAG_RE.search(self.accumulated):
                     self.should_reply = True
-                clean_display = strip_delivery_tags(strip_think_tags(self.accumulated))
+                clean_display = self._emoji_policy(strip_delivery_tags(strip_think_tags(self.accumulated)))
                 if not self.message_id:
                     if len(clean_display) >= 8 or "\n" in clean_display:
                         await self._safe_send_initial(clean_display)
@@ -692,7 +755,7 @@ class TelegramStreamConsumer:
                 sender_mention = "<b>Коломбина</b>"
                 phrase = get_random_rp_phrase(m_act.group(1), sender_mention, target_mention)
                 if phrase:
-                    rp_banner = phrase
+                    rp_banner = self._emoji_policy(phrase)
 
         # 2. Resolve and send sticker if present
         sticker_match = STICKER_TAG_RE.search(final_raw)
@@ -708,7 +771,9 @@ class TelegramStreamConsumer:
             reaction_attrs = react_match.group(1)
             reaction_obj = resolve_reaction(reaction_attrs)
 
-        final_text = strip_delivery_tags(final_raw)
+        final_text = self._emoji_policy(strip_delivery_tags(final_raw))
+        if isinstance(reaction_obj, ReactionTypeCustomEmoji) and reaction_obj.custom_emoji_id not in self.allowed_emojis:
+            reaction_obj = ReactionTypeEmoji(emoji="❤")
 
         if rp_is_inline and rp_banner:
             final_text = f"{rp_banner}\n\n{final_text}" if final_text else rp_banner
@@ -722,7 +787,7 @@ class TelegramStreamConsumer:
         if final_text:
             chunks = split_telegram_text(final_text)
             if not self.message_id:
-                html_text = md_to_telegram_html(chunks[0])
+                html_text = self._format_html(chunks[0])
                 try:
                     await self.bot.send_message(
                         self.chat_id,
@@ -745,7 +810,7 @@ class TelegramStreamConsumer:
                 try:
                     await self.bot.send_message(
                         self.chat_id,
-                        md_to_telegram_html(chunk),
+                        self._format_html(chunk),
                         parse_mode=ParseMode.HTML,
                         message_thread_id=self.message_thread_id,
                     )
@@ -798,7 +863,7 @@ class TelegramStreamConsumer:
 
                     if photo2_path.exists():
                         surprise_caption = random.choice(SURPRISE_CAPTIONS)
-                        html_caption = md_to_telegram_html(surprise_caption)
+                        html_caption = self._format_html(surprise_caption)
                         await self.bot.send_photo(
                             chat_id=self.chat_id,
                             photo=FSInputFile(str(photo2_path)),
@@ -823,7 +888,7 @@ class TelegramStreamConsumer:
                 if p_file.exists():
                     m_cap = re.search(r'caption="([^"]+)"', p_attrs)
                     caption_val = m_cap.group(1).strip() if m_cap else None
-                    html_cap = md_to_telegram_html(caption_val) if caption_val else None
+                    html_cap = self._format_html(caption_val) if caption_val else None
                     try:
                         await self.bot.send_photo(
                             chat_id=self.chat_id,
@@ -849,7 +914,7 @@ class TelegramStreamConsumer:
 
             caption = _tag_attr(file_attrs, "caption")
             caption = caption[:1024] if caption else None
-            html_caption = md_to_telegram_html(caption) if caption else None
+            html_caption = self._format_html(caption) if caption else None
             try:
                 await self.bot.send_document(
                     chat_id=self.chat_id,
@@ -870,9 +935,10 @@ class TelegramStreamConsumer:
                 else None
             )
             try:
+                delivery_id = await current_sticker_file_id(self.bot, sticker_file_id)
                 await self.bot.send_sticker(
                     self.chat_id,
-                    sticker_file_id,
+                    delivery_id,
                     message_thread_id=self.message_thread_id,
                     reply_parameters=sticker_reply_params,
                 )
@@ -880,6 +946,21 @@ class TelegramStreamConsumer:
                     asset_harvester.record_sent_sticker(self.user_id, sticker_file_id)
             except Exception as e:
                 logger.warning(f"Failed to send sticker {sticker_file_id}: {e}")
+
+        # Only replay a GIF actually observed in this user's private conversation.
+        if self.chat_id == self.user_id and GIF_TAG_RE.search(final_raw):
+            gifs = {item["file_id"] for item in personal_memory.style_assets(self.user_id)
+                    if item["type"] == "gif"}
+            attempted = set()
+            for match in GIF_TAG_RE.finditer(final_raw):
+                file_match = re.search(r'file-id="([^"]+)"', match.group(1))
+                if file_match and file_match.group(1) in gifs and file_match.group(1) not in attempted:
+                    attempted.add(file_match.group(1))
+                    try:
+                        await self.bot.send_animation(chat_id=self.chat_id, animation=file_match.group(1),
+                                                      reply_parameters=reply_params)
+                    except Exception as exc:
+                        logger.warning("Could not send personal GIF: %s", exc)
 
         # Set reaction on user's message
         if reaction_obj and self.target_message_id:

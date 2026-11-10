@@ -204,7 +204,7 @@ USER_ASSETS_FILE = DATA_DIR / "user_assets.json"
 CUSTOM_EMOJIS_FILE = DATA_DIR / "custom_emojis.json"
 EMOTIONAL_STATE_FILE = DATA_DIR / "emotional_state.json"
 ADAPTIVE_STATE_FILE = DATA_DIR / "adaptive_profiles.json"
-PROMPT_FILE = BASE_DIR / "system_prompt.md"
+PROMPT_FILE = BASE_DIR / "PERSONA.md"
 
 SYSTEM_PROMPT_DEFAULT = (
     "Ты — Geminka (Columbina), живая, умная, эмоциональная девушка-ассистент."
@@ -225,7 +225,7 @@ def ensure_runtime_dirs() -> None:
     """Ensure all required runtime directories and data files exist with safe defaults."""
     import shutil
 
-    for directory in (DATA_DIR, MEMORIES_DIR, DOWNLOADS_DIR, STICKERS_CACHE_DIR, PHOTOS_CACHE_DIR):
+    for directory in (DATA_DIR, DOWNLOADS_DIR, STICKERS_CACHE_DIR, PHOTOS_CACHE_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
     # Safe file initialization map: (target_file, example_file, fallback_json_str)
@@ -236,7 +236,6 @@ def ensure_runtime_dirs() -> None:
         (ADAPTIVE_STATE_FILE, DATA_DIR / "adaptive_profiles.example.json", '{"profiles":{}}'),
         (DATA_DIR / "active_topics.json", None, '{"topics":{}}'),
         (DATA_DIR / "sessions.json", DATA_DIR / "sessions.example.json", "{}"),
-        (MEMORIES_DIR / "USER.md", MEMORIES_DIR / "USER.example.md", "# User Profile & Preferences\n"),
     ]
 
     for target, example, fallback in file_inits:

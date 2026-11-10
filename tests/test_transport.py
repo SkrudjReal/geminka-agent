@@ -8,8 +8,28 @@ import pytest
 from app.core.context import ContextManager
 from app.core.state import StateStore
 from app.services.antigravity import AntigravityClient, GatewayUnavailable
-from app.services.palace_memory import PalaceMemory
 from app.services.rag import RAGMemoryEngine
+
+
+async def test_completed_empty_agy_turn_is_never_replayed(tmp_path):
+    from app.services.agy_cli import AgyNoResponseError
+
+    store = StateStore(tmp_path / "state.db")
+    client = AntigravityClient(store=store, contexts=ContextManager(store), memories=RAGMemoryEngine(store))
+    calls = []
+
+    class EmptyAgy:
+        _sessions = {}
+
+        async def stream(self, *args, **kwargs):
+            calls.append(1)
+            raise AgyNoResponseError("turn completed without text")
+            yield  # make the fake transport an async generator
+
+    client._agy = EmptyAgy()
+    with pytest.raises(GatewayUnavailable, match="turn completed without text"):
+        _ = [chunk async for chunk in client.generate_stream(1, "hello")]
+    assert len(calls) == 1
 
 
 async def test_retry_before_output_does_not_duplicate(tmp_path) -> None:
@@ -61,7 +81,7 @@ async def test_debug_request_does_not_persist_local_or_server_context(tmp_path) 
     store = StateStore(tmp_path / "state.db")
     store.set_conversation_id(1, "existing-session")
     store.set_debug_mode(1, True)
-    debug_memory = PalaceMemory(tmp_path / "memory", factory, debug_checker=store.is_debug_mode)
+    debug_memory = RAGMemoryEngine(store)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert "existing-session" not in request.content.decode()
@@ -87,7 +107,7 @@ async def test_debug_request_does_not_persist_local_or_server_context(tmp_path) 
 
     assert store.get_conversation_id(1) == "existing-session"
     assert store.get_messages(1) == []
-    assert debug_memory._collection(1).count() == 0
+    assert debug_memory.count(1) == 0
 
 
 async def test_stream_is_not_retried_after_first_token(tmp_path) -> None:

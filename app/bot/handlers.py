@@ -5,6 +5,7 @@ import html
 import logging
 import random
 import re
+import time
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ParseMode
@@ -19,6 +20,7 @@ from aiogram.types import (
 )
 from aiogram.utils.chat_action import ChatActionSender
 
+from app.bot.batching import STREAM_RESTART, PendingTurn, turn_batches
 from app.bot.helpers import extract_message_context, send_response
 from app.bot.middlewares import check_auth, is_owner
 from app.core import config
@@ -29,8 +31,8 @@ from app.engines.emotional import MOOD_DEFINITIONS, emotion_engine
 from app.engines.rp import detect_rp_command, get_random_rp_phrase
 from app.services.antigravity import AVAILABLE_MODELS, AntigravityClient
 from app.services.harvester import asset_harvester
-from app.services.palace_memory import MemoryWriteDisabled
 from app.services.rag import MemoryRejected, rag_engine
+from app.services.sqlite_memory import MemoryWriteDisabled
 from app.services.streamer import TelegramStreamConsumer, md_to_telegram_html
 from app.services.topics import topic_manager
 
@@ -460,9 +462,8 @@ async def cmd_debug(message: types.Message, command: CommandObject):
 
     state_store.set_debug_mode(message.from_user.id, enabled)
     if enabled:
-        await rag_engine.cancel_analysis(message.from_user.id)
         await message.answer(
-            "🧪 Debug режим включён. Новые сообщения не будут записываться в MemPalace, "
+            "🧪 Debug режим включён. Новые сообщения не будут записываться в SQLite-память, "
             "контекст SQLite, профили, каталог ассетов и кэш вложений. Старую память можно "
             "читать, но новые данные не добавляются. Отключить: /debug off"
         )
@@ -487,12 +488,14 @@ async def cmd_palace(message: types.Message, command: CommandObject, antigravity
             text = await asyncio.to_thread(rag_engine.format_rag_context, user_id, command.args)
             await send_response(message, text or "Память пока пуста.")
         elif command.args != "confirm":
-            await message.answer("Чтобы удалить архив, факты и портрет, напиши /forget confirm. Старый SQLite-архив для отката останется на диске, но повторно импортироваться не будет.")
+            await message.answer("Чтобы полностью удалить свой архив, факты и портрет без восстановления, напиши /forget confirm.")
         else:
             await rag_engine.forget(user_id)
             antigravity_client.contexts.clear_user_context(user_id)
             antigravity_client.store.set_conversation_id(user_id, None)
-            await message.answer("Личная память MemPalace и текущий контекст удалены. Следующие сообщения начнут новую память.")
+            if antigravity_client._agy:
+                antigravity_client._agy.reset_user(user_id)
+            await message.answer("Личная SQLite-память и текущий контекст удалены. Следующие сообщения начнут новую память.")
 
 
 @router.message(Command("memory", "memories"))
@@ -519,7 +522,7 @@ async def cmd_memory(message: types.Message):
     text = (
         f'<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Личная долговременная память:**\n\n'
         f"• **Всего фрагментов памяти:** `{total}`\n"
-        f"• **Хранилище:** `MemPalace, отдельный palace на Telegram user ID`\n"
+        f"• **Хранилище:** `SQLite + FTS5/BM25, изоляция по Telegram user ID`\n"
         f"• **Sliding Context Window:** `Active (15 turns / 24k chars)`\n\n"
         f"🧠 **Примеры сохранённых фактов:**\n"
         f"{preview_text}\n\n"
@@ -1012,8 +1015,7 @@ async def cb_topic_del(callback: types.CallbackQuery):
     await cb_topic_list(callback)
 
 
-@router.message()
-async def handle_any_message(
+async def _prepare_message(
     message: types.Message,
     bot: Bot,
     antigravity_client: AntigravityClient,
@@ -1029,6 +1031,18 @@ async def handle_any_message(
     raw_user_content = await extract_message_context(message, bot, persist=not debug_mode)
     if not raw_user_content:
         return
+
+    style_hint = ""
+    if message.chat.type == "private" and not debug_mode and hasattr(antigravity_client.memories, "observe_style"):
+        from app.services.personalization import observations, style_context
+
+        try:
+            await asyncio.to_thread(antigravity_client.memories.observe_style, message.from_user.id,
+                                    f"tg:{message.chat.id}:{message.message_id}", observations(message))
+            profile = await asyncio.to_thread(antigravity_client.memories.style_profile, message.from_user.id)
+            style_hint = style_context(profile)
+        except MemoryWriteDisabled:
+            pass  # /debug may have been enabled while media metadata was resolving.
 
     # 1. Check for Inbound RP Command
     user_text = message.text or message.caption or ""
@@ -1050,7 +1064,7 @@ async def handle_any_message(
 
         rp_banner = get_random_rp_phrase(action, user_mention, target_mention)
         if rp_banner:
-            await message.reply(rp_banner, parse_mode=ParseMode.HTML)
+            raw_user_content += "\n[Ответь на RP-действие одним общим ответом, без отдельного баннера.]"
 
         # Sweet RP actions boost warmth & affection
         if not debug_mode and action in ['погладить', 'обнять', 'поцеловать', 'потискать', 'чай', 'покормить', 'кусь']:
@@ -1087,8 +1101,9 @@ async def handle_any_message(
     else:
         emotion_engine.update_from_input(message.from_user.id, raw_user_content)
         emotional_context = emotion_engine.format_prompt_context(message.from_user.id)
+    emotional_context = "\n".join(part for part in (emotional_context, style_hint) if part)
 
-    # MemPalace is the authoritative user portrait in private conversations.
+    # SQLite is the authoritative user portrait in private conversations.
     # Keep the legacy communication adapter only for the separate group context.
     adaptive_context = ""
     if not debug_mode and message.chat.type != "private":
@@ -1101,51 +1116,128 @@ async def handle_any_message(
         adaptive_context = adaptive_engine.format_adaptive_prompt_context(message.from_user.id)
     user_emojis_context = asset_harvester.format_emojis_prompt_context(message.from_user.id)
 
-    user_id = message.from_user.id
-    # Create live stream consumer
-    consumer = TelegramStreamConsumer(
-        bot=bot,
-        chat_id=message.chat.id,
-        user_id=message.from_user.id,
-        target_message_id=message.message_id,
-        target_user_mention=user_mention,
-        message_thread_id=message.message_thread_id,
-        edit_interval=0.8,
-        cursor=' <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>',
+    return {
+        "prompt": raw_user_content, "emotional_context": emotional_context,
+        "adaptive_context": adaptive_context, "user_emojis_context": user_emojis_context,
+        "memory_input": {
+            "private": message.chat.type == "private",
+            "text": message.text or message.caption or "",
+            "key": f"tg:{message.chat.id}:{message.message_id}",
+            "date": message.date.isoformat(), "chat_id": message.chat.id,
+            "thread_id": message.message_thread_id, "media": str(message.content_type),
+            "name": message.from_user.full_name, "username": message.from_user.username or "",
+            "debug": debug_mode,
+        },
+    }
+
+
+@router.message()
+async def handle_any_message(message: types.Message, bot: Bot, antigravity_client: AntigravityClient):
+    if not message.from_user or not check_auth(message.from_user.id):
+        return
+    if message.chat.type in {"group", "supergroup"}:
+        if not topic_manager.is_topic_active(message.chat.id, message.message_thread_id):
+            if not topic_manager.is_chat_active(message.chat.id) or topic_manager.strip_prefix(message.text or message.caption or "") is None:
+                return
+    key = (message.from_user.id, message.chat.id, message.message_thread_id)
+    antigravity_client.summaries.cancel(message.from_user.id)
+    await turn_batches.submit(
+        key, (message, time.monotonic()),
+        lambda batch: _answer_batch(batch, bot, antigravity_client),
     )
 
+
+async def _answer_batch(batch: PendingTurn, bot: Bot, antigravity_client: AntigravityClient):
+    first, received_at = batch.items[0]
+    user_id = first.from_user.id
+    mention = f'<b><a href="tg://user?id={user_id}">{html.escape(first.from_user.first_name)}</a></b>'
+    consumer = TelegramStreamConsumer(
+        bot=bot, chat_id=first.chat.id, user_id=user_id,
+        target_message_id=first.message_id, target_user_mention=mention,
+        message_thread_id=first.message_thread_id, edit_interval=0.8,
+    )
     try:
         async with user_locks.get(user_id), ChatActionSender.typing(
-            bot=bot,
-            chat_id=message.chat.id,
-            message_thread_id=message.message_thread_id,
+            bot=bot, chat_id=first.chat.id, message_thread_id=first.message_thread_id,
         ):
-            stream_gen = antigravity_client.generate_stream(
-                memory_input={
-                    "private": message.chat.type == "private",
-                    "text": message.text or message.caption or "",
-                    "key": f"tg:{message.chat.id}:{message.message_id}",
-                    "date": message.date.isoformat(),
-                    "chat_id": message.chat.id,
-                    "thread_id": message.message_thread_id,
-                    "media": str(message.content_type),
-                    "name": message.from_user.full_name,
-                    "username": message.from_user.username or "",
-                    "debug": debug_mode,
-                },
-                user_id=message.from_user.id,
-                prompt=raw_user_content,
-                emotional_context=emotional_context,
-                adaptive_context=adaptive_context,
-                user_emojis_context=user_emojis_context,
-            )
-            await consumer.stream_from_generator(stream_gen)
-    except Exception as e:
-        logger.error(f"Error handling message from user {message.from_user.id}: {e}", exc_info=True)
-        try:
-            await message.answer(
-                "Ой... что-то пошло не так во время генерации ответа! Но я всё ещё тут, солнце, напиши мне ещё раз! <tg-emoji emoji-id=\"5305602448260345544\">☺️</tg-emoji> <tg-emoji emoji-id=\"6136716054971291812\">💖</tg-emoji>",
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            pass
+            async def tokens():
+                attempt = 0
+                while True:
+                    while len(batch.prepared) < len(batch.items):
+                        message, arrived = batch.items[len(batch.prepared)]
+                        started = time.monotonic()
+                        item = await _prepare_message(message, bot, antigravity_client)
+                        batch.prepared.append(item)
+                        if item and item["memory_input"]["private"] and not state_store.is_debug_mode(user_id):
+                            source = dict(item["memory_input"])
+                            text, event_key = source.pop("text"), source.pop("key")
+                            await asyncio.to_thread(
+                                antigravity_client.memories.archive, user_id, text or "[media]",
+                                key=event_key, **source,
+                            )
+                        logger.info("telegram prepare_ms=%.0f since_arrival_ms=%.0f user=%s",
+                                    (time.monotonic() - started) * 1000,
+                                    (time.monotonic() - arrived) * 1000, user_id)
+                    revision = batch.revision
+                    prepared = [item for item in batch.prepared if item]
+                    if not prepared:
+                        batch.accepting = False
+                        return
+                    latest = prepared[-1]
+                    prompt = prepared[0]["prompt"] if len(prepared) == 1 else (
+                        "[Серия сообщений одного пользователя до окончания ответа. "
+                        "Ответь один раз на весь блок с учётом последних уточнений. "
+                        "Предыдущий промежуточный ответ не был финализирован для пользователя.]\n"
+                        + "\n\n".join(f"[Сообщение {i}]\n{item['prompt']}" for i, item in enumerate(prepared, 1))
+                    )
+                    if len(prompt) > config.settings.max_input_chars:
+                        header = "[Длинная серия: начало есть в живой сессии; ниже последние уточнения.]\n"
+                        prompt = header + prompt[-(config.settings.max_input_chars - len(header)):]
+                    if attempt:
+                        yield STREAM_RESTART
+                    attempt += 1
+                    consumer.target_message_id = batch.items[-1][0].message_id
+                    source = {**latest["memory_input"], "already_archived": True,
+                              "key": prepared[0]["memory_input"]["key"] + ":batch"}
+                    def current(expected=revision):
+                        return batch.revision == expected
+                    logger.info("telegram generation_start user=%s batch_size=%d attempt=%d", user_id, revision, attempt)
+                    try:
+                        reply = []
+                        async for chunk in antigravity_client.generate_stream(
+                            user_id=user_id, prompt=prompt, memory_input=source, is_current=current,
+                            emotional_context=latest["emotional_context"],
+                            adaptive_context=latest["adaptive_context"],
+                            user_emojis_context=latest["user_emojis_context"],
+                        ):
+                            reply.append(chunk)
+                            if current():
+                                yield chunk
+                    except Exception:
+                        if current():
+                            raise
+                        logger.warning("Superseded generation failed; preparing updated batch user=%s", user_id)
+                    if current():
+                        batch.accepting = False
+                        if reply and not state_store.is_debug_mode(user_id):
+                            antigravity_client.commit_reply(
+                                user_id, prompt, "".join(reply), source,
+                            )
+                        return
+                    logger.info("telegram batch_extended user=%s from=%d to=%d", user_id, revision, batch.revision)
+
+            await consumer.stream_from_generator(tokens())
+            if first.chat.type == "private":
+                if not state_store.is_debug_mode(user_id) and hasattr(antigravity_client.memories, "record_style_delivery"):
+                    try:
+                        await asyncio.to_thread(antigravity_client.memories.record_style_delivery,
+                                                user_id, f"tg:{first.chat.id}:{first.message_id}:batch")
+                    except MemoryWriteDisabled:
+                        pass
+                antigravity_client.schedule_memory_summary(user_id)
+            logger.info("telegram delivered_ms=%.0f user=%s batch_size=%d",
+                        (time.monotonic() - received_at) * 1000, user_id, batch.revision)
+    except Exception:
+        logger.exception("Error handling batch for user %s", user_id)
+        batch.accepting = False
+        await first.answer("Не удалось завершить ответ. Напиши ещё раз, пожалуйста.", parse_mode=None)

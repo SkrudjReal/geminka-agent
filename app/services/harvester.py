@@ -370,91 +370,27 @@ class AssetHarvester:
         return bool(p_info.get("fully_synced") and (p_info.get("scanned") or p_info.get("summary")))
 
     def format_emojis_prompt_context(self, user_id: int) -> str:
-        """Formats built-in/user emoji and sticker catalogs into prompt markup instructions."""
+        """Keep a stable tiny bootstrap; retrieve the full catalog through asset_search."""
         default_emojis = load_default_emojis()
-        emojis = self.get_user_custom_emojis(user_id, limit=12)
-        stickers = self.get_user_stickers(user_id)
-
-        blocks = []
-        if default_emojis:
-            lines = [
-                "[Дефолтные Telegram Premium Emoji Geminka из пака "
-                "columbina_emoji_by_geminka (используй их по умолчанию)]:",
-                "• Выбирай emoji-id по смыслу текущей реплики, description и tags; "
-                "вставляй эмодзи там, где они усиливают эмоцию, а не после каждого предложения.",
-            ]
-            for item in default_emojis:
-                cid = item["custom_emoji_id"]
-                char = item.get("emoji", "✨")
-                desc = item.get("description", "").strip()
-                tags = ", ".join(str(tag) for tag in item.get("tags", []) if tag)
-                details = "; ".join(part for part in (desc, f"теги: {tags}" if tags else "") if part)
-                lines.append(f'• `<tg-emoji emoji-id="{cid}">{char}</tg-emoji>` — {details}')
-            lines.append(
-                "• ПРАВИЛО: этот встроенный набор имеет приоритет над обычными Unicode-эмодзи "
-                "и старыми статическими emoji-id из инструкций; не выдумывай ID."
-            )
-            blocks.append("\n".join(lines))
-
-        if emojis:
-            lines = ["[Кастомные Telegram Premium эмодзи собеседника (используй их в ответах для отзеркаливания)]:"]
-            for item in emojis:
-                cid = item["custom_emoji_id"]
-                char = item.get("emoji", "✨")
-                pack = item.get("set_name", "")
-                pack_hint = f" (пак: {pack})" if pack else ""
-                lines.append(f'• `<tg-emoji emoji-id="{cid}">{char}</tg-emoji>`{pack_hint}')
-            lines.append("• ПРАВИЛО: отдавай приоритет именно этим кастомным эмодзи собеседника!")
-            blocks.append("\n".join(lines))
-
-        if stickers:
-            by_pack: Dict[str, List[Dict[str, Any]]] = {}
-            for s in stickers:
-                p = s.get("set_name", "general")
-                by_pack.setdefault(p, []).append(s)
-
-            st_lines = [
-                "[База знаний стикеров из JSON-каталога (анализируй описания каждого стикера и выбирай наиболее подходящий по смыслу и контексту)]:",
-                "• ПРАВИЛО ВЫБОРА: при каждой отправке стикера сопоставляй контекст диалога с описанием каждого стикера (description) и тегами (tags), выбирая самый остроумный и точный стикер из всех доступных паков, указывая тег `<tg-sticker pack=\"...\" tag=\"...\"/>` или `<tg-sticker tag=\"...\"/>`!",
-                "• СТРОГО НЕ отправляй в точности тот же стикер, что прислал пользователь.",
-            ]
-
-            # Sort packs: packs with descriptions first, then by count, take top 8 packs
-            sorted_packs = sorted(
-                by_pack.items(),
-                key=lambda item: (sum(1 for s in item[1] if s.get("description")), len(item[1])),
-                reverse=True,
-            )[:8]
-
-            for p_name, s_list in sorted_packs:
-                p_info = self.data.get("sticker_packs", {}).get(p_name, {})
-                p_title = p_info.get("title", p_name)
-                p_summary = p_info.get("summary") or p_info.get("description", "")
-                summary_short = f" — {p_summary[:85]}..." if p_summary else ""
-
-                with_desc = [s for s in s_list if s.get("description")]
-                if with_desc:
-                    sample_stickers = with_desc[:10]
-                    more_count = len(with_desc) - len(sample_stickers)
-                    st_lines.append(f"\n📦 **Пак «{p_title}» (`{p_name}`)** ({len(with_desc)} описанных стикеров){summary_short}:")
-                    for s in sample_stickers:
-                        em = s.get("emoji", "✨")
-                        desc = s.get("description", "")
-                        if len(desc) > 90:
-                            desc = desc[:87] + "..."
-                        tags = s.get("tags") or [em]
-                        first_tag = tags[0]
-                        st_lines.append(f"  • [{em}] {desc} -> `<tg-sticker pack=\"{p_name}\" tag=\"{first_tag}\"/>`")
-                    if more_count > 0:
-                        st_lines.append(f"  • ...и ещё {more_count} стикеров в этом паке (указывай pack=\"{p_name}\" и подходящий tag/эмоцию).")
-                else:
-                    em_list = list(dict.fromkeys([s.get("emoji", "✨") for s in s_list]))[:12]
-                    em_str = " ".join(em_list)
-                    st_lines.append(f"\n📦 **Пак «{p_title}» (`{p_name}`)** ({len(s_list)} стикеров): эмодзи [{em_str}] -> `<tg-sticker pack=\"{p_name}\" emoji=\"...\"/>`")
-
-            blocks.append("\n".join(st_lines))
-
-        return "\n\n".join(blocks)
+        selected = {}
+        magic = next((item for item in default_emojis if item["custom_emoji_id"] == "5456184310895748720"),
+                     None)
+        if magic:
+            selected[magic["custom_emoji_id"]] = magic
+        for tag in ("улыбка", "смущение", "любовь", "вопрос", "радость"):
+            item = next((item for item in default_emojis if tag in item.get("tags", [])), None)
+            if item:
+                selected[item["custom_emoji_id"]] = item
+        for item in default_emojis:
+            if len(selected) >= 6:
+                break
+            selected.setdefault(item["custom_emoji_id"], item)
+        lines = ["[Основные Premium Emoji: columbina_emoji_by_geminka; полный каталог доступен через asset_search]:"]
+        for item in list(selected.values())[:6]:
+            tags = ", ".join(str(tag) for tag in item.get("tags", [])[:3])
+            lines.append(f'• <tg-emoji emoji-id="{item["custom_emoji_id"]}">{item.get("emoji", "✨")}</tg-emoji> — {item.get("description", "")[:70]}; теги: {tags}')
+        lines.append('Для другого эмодзи или точного стикера вызови asset_search(query="нужная эмоция или действие", type="emoji|sticker|all", limit=5). Это FTS5/BM25 с русскими формами слов и локальными синонимами; используй готовый markup из результата, не выдумывай ID. Не ищи на каждое приветствие: базовый набор уже доступен. Не отправляй тот же стикер, что прислал пользователь.')
+        return "\n".join(lines)
 
     def record_sent_sticker(self, user_id: int, file_id: str) -> None:
         """Records a sticker sent by the bot for recency and frequency penalty tracking."""

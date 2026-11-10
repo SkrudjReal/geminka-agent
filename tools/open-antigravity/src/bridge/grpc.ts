@@ -145,10 +145,15 @@ export function buildMetadata(apiKey: string) {
 export function buildCascadeConfig(model: string = 'MODEL_PLACEHOLDER_M26', agenticMode: boolean = false) {
   return {
     plannerConfig: {
-      conversational: { plannerMode: 'CONVERSATIONAL_PLANNER_MODE_DEFAULT', agenticMode },
-      toolConfig: {
+      conversational: {
+        plannerMode: agenticMode ? 'CONVERSATIONAL_PLANNER_MODE_DEFAULT' : 'CONVERSATIONAL_PLANNER_MODE_READ_ONLY',
+        agenticMode,
+      },
+      toolConfig: agenticMode ? {
         runCommand: { autoCommandConfig: { autoExecutionPolicy: 'CASCADE_COMMANDS_AUTO_EXECUTION_EAGER' } },
         notifyUser: { artifactReviewMode: 'ARTIFACT_REVIEW_MODE_ALWAYS' },
+      } : {
+        runCommand: { autoCommandConfig: { autoExecutionPolicy: 'CASCADE_COMMANDS_AUTO_EXECUTION_OFF' } },
       },
       requestedModel: { model },
     },

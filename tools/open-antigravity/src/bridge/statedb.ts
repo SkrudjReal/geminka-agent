@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 
@@ -48,17 +48,78 @@ function queryDb(sql: string): string {
   return '';
 }
 
-export function getApiKey(): string {
-  const raw = queryDb("SELECT value FROM ItemTable WHERE key='antigravityAuthStatus';");
+function getCliOAuthToken(): string {
+  const tokenPaths = [
+    path.join(homedir(), '.gemini/antigravity-cli/antigravity-oauth-token'),
+    path.join(homedir(), '.antigravity/antigravity-oauth-token'),
+  ];
+  for (const tokenPath of tokenPaths) {
+    if (existsSync(tokenPath)) {
+      try {
+        const data = JSON.parse(readFileSync(tokenPath, 'utf-8'));
+        const token = data?.token?.access_token || data?.access_token;
+        if (typeof token === 'string' && token.length > 20) {
+          return token;
+        }
+      } catch {}
+    }
+  }
+  return '';
+}
+
+function getOAuthTokenFromStateDb(): string {
+  const raw = queryDb("SELECT value FROM ItemTable WHERE key='antigravityUnifiedStateSync.oauthToken';");
   if (!raw) return '';
-  try { return JSON.parse(raw).apiKey || ''; } catch { return ''; }
+  try {
+    const b1 = Buffer.from(raw, 'base64').toString('utf-8');
+    const matches = b1.match(/[A-Za-z0-9+/=]{40,}/g);
+    if (matches) {
+      for (const piece of matches) {
+        try {
+          const decoded = Buffer.from(piece, 'base64').toString('utf-8');
+          const ym = decoded.match(/ya29\.[a-zA-Z0-9_\-]+/);
+          if (ym) return ym[0];
+        } catch {}
+      }
+    }
+  } catch {}
+  return '';
+}
+
+export function getApiKey(): string {
+  if (process.env.ANTIGRAVITY_API_KEY) {
+    return process.env.ANTIGRAVITY_API_KEY;
+  }
+
+  const raw = queryDb("SELECT value FROM ItemTable WHERE key='antigravityAuthStatus';");
+  if (raw) {
+    try {
+      const key = JSON.parse(raw).apiKey;
+      if (key) return key;
+    } catch {}
+  }
+
+  const cliToken = getCliOAuthToken();
+  if (cliToken) return cliToken;
+
+  const dbOauthToken = getOAuthTokenFromStateDb();
+  if (dbOauthToken) return dbOauthToken;
+
+  return '';
 }
 
 export function getUserInfo(): { name: string; email: string; apiKey: string } {
+  const apiKey = getApiKey();
   const raw = queryDb("SELECT value FROM ItemTable WHERE key='antigravityAuthStatus';");
-  if (!raw) return { name: '', email: '', apiKey: '' };
-  try {
-    const data = JSON.parse(raw);
-    return { name: data.name || '', email: data.email || '', apiKey: data.apiKey || '' };
-  } catch { return { name: '', email: '', apiKey: '' }; }
+  if (raw) {
+    try {
+      const data = JSON.parse(raw);
+      return {
+        name: data.name || '',
+        email: data.email || '',
+        apiKey: apiKey || data.apiKey || ''
+      };
+    } catch {}
+  }
+  return { name: '', email: '', apiKey };
 }

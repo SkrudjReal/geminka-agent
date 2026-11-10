@@ -46,8 +46,8 @@ I don't just give dry, command-like answers: I follow the conversation, empathiz
         ┌──────────────────┼──────────────────┐
         ▼                  ▼                  ▼
 ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ Direct agy   │   │ SQLite Store │   │  MemPalace   │
-│ CLI stream-  │   │  (WAL Mode)  │   │  Vector &    │
+│ Direct agy   │   │ SQLite Store │   │  SQLite FTS5/BM25   │
+│ CLI stream-  │   │  (WAL Mode)  │   │  FTS5/BM25   │
 │ json session │   │              │   │  User Memory │
 └───────┬──────┘   └───────┬──────┘   └───────┬──────┘
         │                  │                  │
@@ -73,19 +73,20 @@ I don't just give dry, command-like answers: I follow the conversation, empathiz
 
 3. **🗄️ Isolated SQLite WAL state (`data/state.db`):**
    * Settings, selected model, reasoning effort, short context, and conversation IDs are stored separately for each Telegram user ID.
-   * SQLite holds operational state; the long-term conversation archive and facts are stored in MemPalace.
+   * SQLite holds operational state; the long-term conversation archive and facts are stored in SQLite FTS5/BM25.
 
-4. **🧠 MemPalace long-term memory:**
-   * Each user has a separate store containing a Telegram archive, extracted facts, and an evolving portrait; `/recall` performs semantic search.
-   * `/debug` temporarily disables new memory writes. `/forget confirm` deletes that user's memory and short context. See the [MemPalace documentation](docs/mempalace.md) for details and limitations.
+4. **🧠 SQLite FTS5/BM25 long-term memory:**
+   * Follow-ups arriving before generation completes are combined into one reply. Idle-time user summaries live in `memory.db`; the full archive stays available through FTS5/BM25. Summary generation never resets the live AGY conversation.
+   * Each user has a separate store containing a Telegram archive, extracted facts, and an evolving portrait; `/recall` uses lexical FTS5/BM25 search without embeddings.
+   * `/debug` temporarily disables new memory writes. `/forget confirm` deletes that user's memory and short context. See the [SQLite FTS5/BM25 documentation](docs/memory.md) for details and limitations.
 
 5. **🎭 Emotional core, stickers, and media:**
-   * Emotional state and adaptive conversation style are separate from the user's MemPalace portrait.
+   * Emotional state and adaptive conversation style are separate from the user's SQLite FTS5/BM25 portrait.
    * Stickers and Premium Emoji are selected using descriptions from the built-in catalogs and user database. Reactions, RP actions, and streamed file delivery are also supported.
 
 6. **📢 Telegram channel publishing:**
    * The owner-only MCP bridge to the Bot API prepares a post with a preview image, sends the photo draft to the owner's private chat, then sends a separate reply-comment and forwards the photo to the channel.
-   * Images are found on Pinterest and presented in a contact sheet for selection; previously used URLs are tracked in a local registry. Edit the post style in [`POST_STYLE.md`](POST_STYLE.md); restore the original from [`POST_STYLE_DEFAULT.md`](POST_STYLE_DEFAULT.md).
+   * Images are found on Pinterest and presented in a contact sheet for selection; previously used URLs are tracked in a local registry. Edit or restore post style using the current/default style sections of [`PERSONA.md`](PERSONA.md).
    * The `geminka-bot-api` server must be registered separately in the `agy` CLI's MCP settings. Its configuration and credentials are not stored in Git.
 
 ---
@@ -97,7 +98,7 @@ geminka-agent/
 ├── app/
 │   ├── core/               # Configuration, SQLite, context, files, security
 │   ├── engines/            # Emotional, adaptive, and RP engines
-│   ├── services/           # agy/OMP, MemPalace, Bot API/MCP, stickers, streaming
+│   ├── services/           # agy/OMP, SQLite FTS5/BM25, Bot API/MCP, stickers, streaming
 │   ├── bot/                # Handlers, middleware, and Telegram commands
 │   ├── healthcheck.py      # Docker health check
 │   └── main.py             # Bot initialization and startup
@@ -105,20 +106,17 @@ geminka-agent/
 │   ├── default_stickers.json # Descriptions of built-in stickers
 │   ├── default_emojis.json   # Descriptions of built-in Premium Emoji
 │   └── *.example.json        # Runtime-data examples
-├── docs/mempalace.md       # Long-term memory architecture and commands
-├── memories/               # Shared, depersonalized project context
+├── docs/memory.md       # Long-term memory architecture and commands
 ├── scripts/
 │   ├── select_post_image.py # Search and contact sheets for post images
 │   └── start.sh             # Startup script for the user systemd service
 ├── tests/                  # Automated tests
-├── POST_STYLE.md           # Editable post style
-├── POST_STYLE_DEFAULT.md   # Original style for restoration
 ├── main.py                 # Application entry point
 ├── run.sh                  # Setup and launch via uv/systemd --user
 ├── Dockerfile              # Docker image without the agy CLI
 ├── docker-compose.yml      # Container orchestration
 ├── pyproject.toml          # Dependencies and tool configuration
-└── system_prompt.md        # Columbina's core instructions and persona
+└── PERSONA.md        # Columbina's core instructions and persona
 ```
 
 ---
@@ -169,7 +167,7 @@ journalctl --user -u geminka-agent.service -f
 systemctl --user restart geminka-agent.service
 ```
 
-Multiple copies need **different BotFather tokens** and separate `.env`, `data/`, `memory/`, `memories/`, and `downloads/`: do not symlink runtime directories or copy private user memories. Duplicate local bot IDs are blocked, including manual launches; this does not cover another host or a container with a separate `/tmp`. AGY state stays project-local in `data/agy_sandbox/` even with `/sandbox off`; Bubblewrap is required in both modes. Authentication and quotas for the same AGY account are shared. Legacy OMP is an external server: use separate gateway URLs/ports for independence.
+Multiple copies need **different BotFather tokens** and separate `.env`, `data/`, and `downloads/`: do not symlink runtime directories or copy private user memories. Duplicate local bot IDs are blocked, including manual launches; this does not cover another host or a container with a separate `/tmp`. AGY state stays project-local in `data/agy_sandbox/` even with `/sandbox off`; Bubblewrap is required in both modes. Authentication and quotas for the same AGY account are shared. Legacy OMP is an external server: use separate gateway URLs/ports for independence.
 
 ### 3. Run with Docker
 
@@ -193,9 +191,9 @@ Legacy OMP does not provide this filesystem isolation: generation through OMP is
 | `/reasoning` | Set reasoning effort (`low`, `medium`, `high`; owner only) |
 | `/mood` | Current emotional state and relationship level |
 | `/memory` | View saved facts and long-term memory |
-| `/remember <fact>` | Save a fact to MemPalace |
+| `/remember <fact>` | Save a fact to SQLite FTS5/BM25 |
 | `/portrait` | View the current user portrait |
-| `/recall <question>` | Semantic search through the memory archive |
+| `/recall <question>` | FTS5/BM25 search through the memory archive |
 | `/forget confirm` | Delete personal memory and short context |
 | `/debug [on\|off\|status]` | Temporarily disable new memory writes |
 | `/sandbox [on\|off\|status]` | Toggle the bot-wide filesystem sandbox (owner only; ON by default) |
@@ -209,7 +207,7 @@ Legacy OMP does not provide this filesystem isolation: generation through OMP is
 
 To receive ordinary group messages, make the bot an administrator or disable Privacy Mode through BotFather (`/setprivacy`) and re-add it to the group. Otherwise Telegram may not deliver plain-text prefix messages.
 
-In a group, the owner can use `/chats add`; in private, `/chats add -1001234567890` or the add button. Group messages/captions must start with a prefix: `коломбина привет` or `клумба, привет`. Replies do not bypass this check. `/prefix астра, муза` replaces prefixes for ordinary groups; `/prefix reset` restores defaults. Registered `/topic` threads respond without a prefix, even when their group is also registered via `/chats`. Members must pass `TELEGRAM_ALLOWED_USERS` (or explicitly enabled `TELEGRAM_ALLOW_ALL_USERS`); settings and their buttons are owner-only. Groups use the owner's model/reasoning and separate user/chat/thread context, without retrieving private MemPalace memory. Non-owner AGY project writes are blocked even with `/sandbox off`. Reads/network are not blocked: do not enable public access for untrusted users without further isolation. The registry is stored in ignored `data/active_topics.json`.
+In a group, the owner can use `/chats add`; in private, `/chats add -1001234567890` or the add button. Group messages/captions must start with a prefix: `коломбина привет` or `клумба, привет`. Replies do not bypass this check. `/prefix астра, муза` replaces prefixes for ordinary groups; `/prefix reset` restores defaults. Registered `/topic` threads respond without a prefix, even when their group is also registered via `/chats`. Members must pass `TELEGRAM_ALLOWED_USERS` (or explicitly enabled `TELEGRAM_ALLOW_ALL_USERS`); settings and their buttons are owner-only. Groups use the owner's model/reasoning and separate user/chat/thread context, without retrieving private SQLite FTS5/BM25 memory. Non-owner AGY project writes are blocked even with `/sandbox off`. Reads/network are not blocked: do not enable public access for untrusted users without further isolation. The registry is stored in ignored `data/active_topics.json`.
 
 ---
 
@@ -238,7 +236,7 @@ This project is released under the [MIT License](LICENSE).
   <i>With love, your Columbina 🌸</i>
 </div>
 
-# MemPalace Memory
+# SQLite FTS5/BM25 Memory
 
-Persistent Telegram archive, vector search, and an automatically updated user portrait:
-[setup, migration, and commands](docs/mempalace.md).
+Persistent Telegram archive, FTS5/BM25 search, and a model-maintained user portrait via MCP:
+[setup, migration, and commands](docs/memory.md).

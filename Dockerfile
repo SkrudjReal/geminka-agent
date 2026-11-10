@@ -20,8 +20,8 @@ COPY . .
 
 RUN groupadd --gid 1000 geminka \
     && useradd --uid 1000 --gid 1000 --create-home geminka \
-    && mkdir -p /app/data /app/memories /app/memory /app/downloads \
-    && chown -R geminka:geminka /app/data /app/memories /app/memory /app/downloads
+    && mkdir -p /app/data /app/downloads \
+    && chown -R geminka:geminka /app/data /app/downloads
 
 USER geminka
 

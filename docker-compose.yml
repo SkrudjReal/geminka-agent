@@ -13,7 +13,4 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
-      - ./memories:/app/memories
-      - ./memory:/app/memory
-      - ./memory/model-cache:/home/geminka/.cache
-      - ./system_prompt.md:/app/system_prompt.md
+      - ./PERSONA.md:/app/PERSONA.md:ro

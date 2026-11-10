@@ -18,8 +18,8 @@ from app.core import config
 from app.core.context import ContextManager, context_manager
 from app.core.state import StateStore, state_store
 from app.services.agy_cli import AgyCliClient, AgyCliError
-from app.services.palace_memory import PalaceMemory
 from app.services.rag import RAGMemoryEngine, rag_engine
+from app.services.summaries import SummaryWorker
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class AntigravityClient:
         api_key: str | None = None,
         store: StateStore = state_store,
         contexts: ContextManager = context_manager,
-        memories: RAGMemoryEngine | PalaceMemory = rag_engine,
+        memories: RAGMemoryEngine = rag_engine,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._use_legacy_omp = (
@@ -94,6 +94,8 @@ class AntigravityClient:
         self.store = store
         self.contexts = contexts
         self.memories = memories
+        self.summaries = SummaryWorker(memories, self._summary_completion)
+        self._memory_snapshots: dict[int, str] = {}
         self._owns_client = http_client is None
 
         headers = {}
@@ -110,12 +112,45 @@ class AntigravityClient:
             logger.info("Legacy OMP client initialized for %s", self.base_url)
 
     async def aclose(self) -> None:
+        await self.summaries.close()
         if hasattr(self.memories, "drain"):
             await self.memories.drain()
         if self._agy:
             await self._agy.aclose()
         elif self._owns_client and self._client:
             await self._client.aclose()
+
+    def schedule_memory_summary(self, user_id: int):
+        if self._agy and hasattr(self.memories, "summary_input") and not self.store.is_debug_mode(user_id):
+            self.summaries.schedule(user_id)
+
+    @staticmethod
+    def conversation_scope(user_id: int, source: dict | None = None) -> int:
+        if source is None or source.get("private", True):
+            return user_id
+        scope = f"{user_id}:{source.get('chat_id', '')}:{source.get('thread_id', '')}"
+        return -int(hashlib.sha256(scope.encode()).hexdigest()[:15], 16) - 1
+
+    def commit_reply(self, user_id: int, prompt: str, reply: str, source: dict):
+        if self.store.is_debug_mode(user_id):
+            return
+        self.contexts.add_exchange(self.conversation_scope(user_id, source), prompt, reply)
+        if source.get("private", True) and source.get("key"):
+            self.memories.archive(user_id, reply, role="assistant", key=source["key"] + ":reply")
+
+    async def _summary_completion(self, user_id: int, system: str, text: str) -> str:
+        if not self._agy:
+            raise GatewayError("Background summaries currently require direct AGY transport")
+        client = AgyCliClient(command=self._agy.command, timeout_seconds=45, sandbox_enabled=True)
+        try:
+            chunks = [chunk async for chunk in client.stream(
+                -user_id, model=self.get_user_model(user_id), effort="low", debug=True,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
+                tool_context={"requester_id": "summary", "chat_id": "0"},
+            )]
+            return "".join(chunks)
+        finally:
+            await client.aclose()
 
     async def set_sandbox_mode(self, requester_id: int, enabled: bool) -> None:
         if requester_id != config.settings.owner_user_id:
@@ -257,6 +292,7 @@ class AntigravityClient:
         adaptive_context: str = "",
         user_emojis_context: str = "",
         memory_input: dict | None = None,
+        is_current=None,
     ) -> AsyncGenerator[str, None]:
         """Stream a model reply through the selected direct or legacy transport."""
         if not self._agy and config.settings.transport == "omp" and self.store.is_sandbox_enabled():
@@ -266,10 +302,7 @@ class AntigravityClient:
         model = self.get_user_model(settings_user)
         reasoning_effort = self._ensure_reasoning_effort(model, self.get_user_reasoning(settings_user))
         debug_mode = self.store.is_debug_mode(user_id)
-        context_id = user_id
-        if not use_memory:
-            scope = f"{user_id}:{memory_input.get('chat_id', '')}:{memory_input.get('thread_id', '')}"
-            context_id = -int(hashlib.sha256(scope.encode()).hexdigest()[:15], 16) - 1
+        context_id = self.conversation_scope(user_id, memory_input)
         # Debug traffic must not continue or create a server-side persisted cascade.
         convo_id = None if debug_mode else self.store.get_conversation_id(context_id)
 
@@ -297,7 +330,7 @@ class AntigravityClient:
         if use_memory:
             if hasattr(self.memories, "archive"):
                 source = memory_input or {"text": prompt}
-                if not debug_mode:
+                if not debug_mode and not source.get("already_archived"):
                     event_key = await asyncio.to_thread(
                         self.memories.archive, user_id, source.get("text") or "[media]",
                         key=source.get("key"),
@@ -307,15 +340,27 @@ class AntigravityClient:
                         telegram_name=source.get("name", ""),
                         telegram_username=source.get("username", ""),
                     )
-                    self.memories.schedule_analysis(user_id, lambda system, text: self._memory_completion(user_id, system, text))
-            memory_context = await asyncio.to_thread(self.memories.format_rag_context, user_id, prompt)
+                elif source.get("already_archived"):
+                    event_key = source.get("key")
+            # Frozen per live session: no repeated search or profile refresh on every turn.
+            if self._agy and not debug_mode:
+                sessions = getattr(self._agy, "_sessions", {})
+                if context_id not in sessions:
+                    self._memory_snapshots.pop(context_id, None)
+                if context_id not in self._memory_snapshots:
+                    self._memory_snapshots[context_id] = await asyncio.to_thread(
+                        self.memories.format_memory_context, user_id,
+                    )
+                memory_context = self._memory_snapshots[context_id]
+            else:
+                memory_context = await asyncio.to_thread(self.memories.format_memory_context, user_id)
 
         messages = self.contexts.build_payload_messages(
             user_id=context_id,
             current_prompt=prompt,
             system_prompt=system_prompt or config.get_system_prompt(),
             emotional_context="" if self._agy else emotional_context,
-            memory_context="" if self._agy else memory_context,
+            memory_context=memory_context,
             adaptive_context="" if self._agy else adaptive_context,
             user_emojis_context=user_emojis_context,
             runtime_context="" if self._agy else runtime_context,
@@ -342,7 +387,7 @@ class AntigravityClient:
                         messages=messages,
                         debug=debug_mode,
                         turn_context="\n\n".join(
-                            block for block in (memory_context, emotional_context, adaptive_context, runtime_context)
+                            block for block in (emotional_context, adaptive_context, runtime_context)
                             if block
                         ),
                         tool_context={
@@ -354,7 +399,7 @@ class AntigravityClient:
                         reply.append(token)
                         yield token
                     full_reply = "".join(reply).strip()
-                    if full_reply and not debug_mode:
+                    if full_reply and not debug_mode and is_current is None:
                         self.contexts.add_exchange(context_id, prompt, full_reply)
                         if event_key:
                             await asyncio.to_thread(
@@ -366,9 +411,11 @@ class AntigravityClient:
                             )
                     return
                 except AgyCliError as exc:
+                    if is_current is not None and not is_current():
+                        raise GatewayUnavailable("Superseded turn failed; the combined turn will replace it") from exc
                     if emitted:
                         raise GatewayUnavailable("agy оборвал ответ после начала ответа.") from exc
-                    if attempt >= max_retries:
+                    if not exc.retryable or attempt >= max_retries:
                         raise GatewayUnavailable(f"Прямой agy CLI недоступен: {exc}") from exc
                     logger.warning(
                         "agy request failed; retrying attempt %d/%d: %s",
@@ -443,7 +490,7 @@ class AntigravityClient:
                                 yield token
 
                         full_reply = "".join(reply).strip()
-                        if full_reply and not debug_mode:
+                        if full_reply and not debug_mode and is_current is None:
                             self.contexts.add_exchange(context_id, prompt, full_reply)
                             if event_key:
                                 await asyncio.to_thread(self.memories.archive, user_id, full_reply,
@@ -504,43 +551,6 @@ class AntigravityClient:
 
         raise GatewayUnavailable("OMP Gateway недоступен. Проверьте запуск OMP и OMP_BASE_URL.")
 
-    async def _memory_completion(self, user_id: int, system: str, text: str) -> str:
-        """Isolated SSE call: no chat session, tools, persona or recursive memorization."""
-        if not self._agy and config.settings.transport == "omp" and self.store.is_sandbox_enabled():
-            raise GatewayError("Sandbox требует прямой agy-транспорт.")
-        if self._agy:
-            result: list[str] = []
-            async for token in self._agy.stream(
-                user_id,
-                model=self.get_user_model(user_id),
-                effort="low",
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
-                debug=True,
-            ):
-                result.append(token)
-            return "".join(result)
-
-        payload = {
-            "model": self.get_user_model(user_id),
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}],
-            "max_tokens": 6000, "reasoning_effort": "low", "stream": True,
-        }
-        for attempt in range(3):
-            try:
-                async with self._client.stream("POST", self._get_endpoint("chat/completions"), json=payload) as response:
-                    response.raise_for_status()
-                    result = []
-                    async for token, _ in self._iter_sse_content(response):
-                        result.append(token)
-                    return "".join(result)
-            except (ModelUnavailable, httpx.HTTPError) as exc:
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500 and exc.response.status_code != 429:
-                    raise
-                if attempt == 2:
-                    raise
-                await self._backoff(attempt + 1)
-        raise GatewayUnavailable("Memory model unavailable")
-
     async def generate_stream(
         self,
         user_id: int,
@@ -550,11 +560,13 @@ class AntigravityClient:
         user_emojis_context: str = "",
         conversation_id: str | None = None,
         memory_input: dict | None = None,
+        is_current=None,
     ) -> AsyncGenerator[str, None]:
         """Primary stream generator used by Telegram handlers."""
         del conversation_id  # Unused legacy argument preserved for signature compatibility
         async for token in self.stream_omp_chat(
             memory_input=memory_input,
+            is_current=is_current,
             user_id=user_id,
             prompt=prompt,
             emotional_context=emotional_context,

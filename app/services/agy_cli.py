@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 class AgyCliError(RuntimeError):
     """The direct ``agy`` process could not complete a turn."""
+
+    retryable = True
+
+
+class AgyNoResponseError(AgyCliError):
+    """A completed turn may already have executed tools: never replay it blindly."""
+
+    retryable = False
 
 
 def cli_model_name(model: str, effort: str) -> str:
@@ -92,12 +101,13 @@ class AgyCliClient:
             self.sandbox_enabled = enabled
             await self._close_all()
 
-    def _sandbox_command(self, args: list[str], *, read_only: bool = False) -> list[str]:
+    def _sandbox_command(self, args: list[str], *, read_only: bool = False, tools_enabled: bool = True) -> list[str]:
         try:
             if not self.sandbox_enabled and not read_only:
                 return agy_sandbox_command([self.command, *args], self.project_dir, restricted=False)
             return agy_sandbox_command(
                 [self.command, "--sandbox", *args], self.project_dir, read_only=read_only,
+                **({"tools_enabled": False} if not tools_enabled else {}),
             )
         except (SandboxError, OSError) as exc:
             raise AgyCliError(str(exc)) from exc
@@ -112,7 +122,7 @@ class AgyCliClient:
             "--model", model, "--effort", effort, "--mode", "plan" if read_only else "accept-edits",
             "--add-dir", str(self.project_dir), "--disable-slash-commands",
             "--print-timeout", f"{self.timeout_seconds}s",
-        ], read_only=read_only)
+        ], read_only=read_only, tools_enabled=requester != "summary")
 
     def reset_user(self, user_id: int) -> None:
         session = self._sessions.pop(user_id, None)
@@ -201,12 +211,23 @@ class AgyCliClient:
             else:
                 outgoing = [current]
             prompt = format_messages(outgoing)
+            turn_started = time.monotonic()
+            first_token_at = None
             logger.info("agy turn: bootstrap=%s chars=%d", not session.started, len(prompt))
             try:
                 async for token in self._send(session, prompt):
+                    if first_token_at is None:
+                        first_token_at = time.monotonic()
+                        logger.info("agy first_token_ms=%.0f bootstrap=%s", (first_token_at - turn_started) * 1000, not session.started)
                     yield token
                 session.started = True
                 session.instructions = instructions
+                logger.info("agy completed_ms=%.0f", (time.monotonic() - turn_started) * 1000)
+            except asyncio.CancelledError:
+                if self._sessions.get(user_id) is session:
+                    self._sessions.pop(user_id, None)
+                await self._close_session(session)
+                raise
             except (AgyCliError, asyncio.TimeoutError):
                 if self._sessions.get(user_id) is session:
                     self._sessions.pop(user_id, None)
@@ -327,6 +348,7 @@ class AgyCliClient:
             process.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode())
             await process.stdin.drain()
 
+        received_text = False
         while True:
             raw_line = await asyncio.wait_for(process.stdout.readline(), timeout=self.timeout_seconds + 10)
             if not raw_line:
@@ -342,6 +364,7 @@ class AgyCliClient:
                 if update.get("step_type") == "agent_response":
                     delta = update.get("text_delta")
                     if isinstance(delta, str) and delta:
+                        received_text = True
                         yield delta
                 continue
             if event.get("event") != "result":
@@ -350,6 +373,13 @@ class AgyCliClient:
             result = event.get("result", {})
             if str(result.get("status", "")).casefold() != "success":
                 raise self._error_from_text(json.dumps(result, ensure_ascii=False))
+            # Some CLI turns return only the final response, without text deltas.
+            # Never replay the full response after an already streamed answer.
+            response = result.get("response")
+            if not received_text and isinstance(response, str) and response:
+                yield response
+            elif not received_text:
+                raise AgyNoResponseError("AGY завершил запрос без текста; автоматический повтор небезопасен.")
             return
 
     async def _drain_stderr(self, session: _Session) -> None:

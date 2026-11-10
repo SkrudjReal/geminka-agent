@@ -1,9 +1,36 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 
-from app.services.agy_cli import AgyCliClient, _Session
+from app.services.agy_cli import AgyCliClient, AgyNoResponseError, _Session
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+async def test_result_only_response_is_delivered_without_replaying_deltas(streamed):
+    reader = asyncio.StreamReader()
+    if streamed:
+        reader.feed_data((json.dumps({"event": "step_update", "step_update": {
+            "step_type": "agent_response", "text_delta": "answer",
+        }}) + "\n").encode())
+    reader.feed_data((json.dumps({"event": "result", "result": {
+        "status": "success", "response": "answer",
+    }}) + "\n").encode())
+    reader.feed_eof()
+    process = SimpleNamespace(stdin=object(), stdout=reader)
+    session = _Session(process, "gemini", "high", asyncio.Lock())
+    client = AgyCliClient()
+    assert [part async for part in client._send(session, None)] == ["answer"]
+
+
+async def test_success_without_any_response_is_not_silent_or_retryable():
+    reader = asyncio.StreamReader()
+    reader.feed_data(b'{"event":"result","result":{"status":"success"}}\n')
+    session = _Session(SimpleNamespace(stdin=object(), stdout=reader), "gemini", "high", asyncio.Lock())
+    with pytest.raises(AgyNoResponseError) as error:
+        _ = [part async for part in AgyCliClient()._send(session, None)]
+    assert not error.value.retryable
 
 
 @pytest.mark.asyncio

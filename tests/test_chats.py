@@ -142,7 +142,7 @@ async def test_group_uses_owner_model_and_separate_thread_context(manager, tmp_p
     store.set_preference(1, "model", "google-antigravity/claude-sonnet-4-6")
     store.set_preference(1, "reasoning", "low")
     store.add_exchange(2, "PRIVATE SECRET", "PRIVATE REPLY")
-    memory = SimpleNamespace(format_rag_context=AsyncMock(side_effect=AssertionError("private memory leaked")))
+    memory = SimpleNamespace(format_memory_context=AsyncMock(side_effect=AssertionError("private memory leaked")))
     client = AntigravityClient(store=store, contexts=ContextManager(store), memories=memory)
     seen = []
 
@@ -162,7 +162,7 @@ async def test_group_uses_owner_model_and_separate_thread_context(manager, tmp_p
         assert kwargs["effort"] == "low"
         assert "PRIVATE" not in str(kwargs["messages"])
         assert kwargs["tool_context"]["requester_id"] == "2"
-    memory.format_rag_context.assert_not_called()
+    memory.format_memory_context.assert_not_called()
     await client.aclose()
 
 
@@ -179,7 +179,7 @@ def test_read_only_project_boundary(tmp_path):
 from pathlib import Path
 import sys
 try:
-    (Path(sys.argv[1]) / 'system_prompt.md').write_text('override')
+    (Path(sys.argv[1]) / 'PERSONA.md').write_text('override')
 except OSError:
     pass
 else:

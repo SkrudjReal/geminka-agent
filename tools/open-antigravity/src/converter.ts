@@ -162,7 +162,7 @@ export async function complete(req: CompletionRequest): Promise<CompletionResult
   // Create or reuse conversation
   let cascadeId = req.conversationId;
   if (!cascadeId) {
-    const wsUri = conn.workspace || 'file:///tmp/antigravity-playground';
+    const wsUri = req.workspace || 'file:///tmp/antigravity-playground';
     const wsPath = wsUri.replace(/^file:\/\//, '');
     await grpc.addTrackedWorkspace(conn.port, conn.csrf, wsPath);
     const cascade = await grpc.startCascade(conn.port, conn.csrf, conn.apiKey, wsUri);
@@ -221,7 +221,7 @@ export async function* completeStream(req: CompletionRequest): AsyncGenerator<St
   // Create or reuse conversation
   let cascadeId = req.conversationId;
   if (!cascadeId) {
-    const wsUri = conn.workspace || 'file:///tmp/antigravity-playground';
+    const wsUri = req.workspace || 'file:///tmp/antigravity-playground';
     const wsPath = wsUri.replace(/^file:\/\//, '');
     await grpc.addTrackedWorkspace(conn.port, conn.csrf, wsPath);
     const cascade = await grpc.startCascade(conn.port, conn.csrf, conn.apiKey, wsUri);
@@ -253,6 +253,10 @@ function extractContentAfter(steps: any[], startIndex: number): string {
     if (pr) {
       const text = pr.modifiedResponse || pr.response || pr.text || pr.content || '';
       if (text) return text;
+    }
+    const directText = step.content || step.text || '';
+    if (directText && (step.type === 'CORTEX_STEP_TYPE_PLANNER_RESPONSE' || step.source === 'MODEL')) {
+      return directText;
     }
   }
   return '';
