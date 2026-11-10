@@ -27,6 +27,7 @@ from mcp.types import TextContent, ToolAnnotations
 
 from app.core import config
 from app.services.bot_api import BotApiCallError, call_bot_api
+from app.services.collector_mcp import register_collector
 from app.services.sqlite_memory import MemoryRejected, MemoryWriteDisabled, memory
 
 # ponytail: in-memory pending flow; restart cancels an unfinished channel publish safely.
@@ -51,6 +52,8 @@ mcp = FastMCP(
         "with real line breaks, not literal backslash-n characters."
         " Project skills are available through skill_list and skill_read. Read the geminka "
         "skill before capability questions or unfamiliar workflows; load only relevant references."
+        " Optional Telegram archive tools are collector_tools and collector_call; read "
+        "geminka references/tg-collector.md for search and analytics. Unavailability never blocks ordinary chat."
     ),
 )
 
@@ -596,6 +599,15 @@ async def bot_api_call(method: str, params: dict[str, Any] | None = None) -> dic
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     ) as bot:
         return await _invoke(bot, method, params)
+
+
+def _collector_access() -> bool:
+    owner = config.settings.owner_user_id
+    return (owner is not None and _requester_id() == owner
+            and os.getenv("GEMINKA_CHAT_ID", "") == str(owner))
+
+
+register_collector(mcp, _collector_access)
 
 
 async def main() -> None:

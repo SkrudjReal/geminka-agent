@@ -21,7 +21,9 @@ AGY runs with a separate HOME and empty working directory under
 `~/.geminka/instances/<project-path-hash>/`. Its `AGENTS.md` is empty. Global AGY
 settings, hooks, plugins, skills, and other MCP servers are not inherited. Only
 `geminka-bot-api` is registered automatically; its command explicitly selects this
-project. Existing `data/agy_sandbox` conversation storage is retained and mounted
+project. An [optional Telegram Collector gateway](tg-collector.md) can be enabled
+inside this bridge for the owner's private chat; no remote connection is required at startup.
+Existing `data/agy_sandbox` conversation storage is retained and mounted
 into the isolated home. Repository AGENTS/GEMINI/CLAUDE instructions are masked
 inside the child process, without modifying the original files. PERSONA.md still
 comes from the application. This isolates configuration, not the native CLI's
