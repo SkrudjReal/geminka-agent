@@ -68,7 +68,7 @@ I don't just give dry, command-like answers: I follow the conversation, empathiz
 
 2. **⚡ Direct `agy` CLI transport:**
    * **Direct connection:** Geminka uses the installed and authenticated `agy` CLI by default, maintains a live `stream-json` session per user, and does not require the Antigravity IDE, Xvfb, or a language server.
-   * **Model selection:** `/model` switches between Gemini 3.8/3.7/3.6 Flash and Claude Sonnet/Opus 4.6; `/reasoning` sets the reasoning effort.
+   * **Model selection:** `/model` reads current models from `agy models`, grouping reasoning variants into one model button. AGY failures never substitute a static list; old buttons are revalidated before selection. `/reasoning` (alias `/resoning`) separately selects only the chosen model's supported reasoning levels.
    * **Legacy gateway:** The OpenAI-compatible OMP transport is available only when `AGY_TRANSPORT=omp` is explicitly set.
 
 3. **🗄️ Isolated SQLite WAL state (`data/state.db`):**
@@ -187,7 +187,7 @@ Legacy OMP does not provide this filesystem isolation: generation through OMP is
 | Command | Description |
 | :--- | :--- |
 | `/start`, `/help` | Columbina's greeting and help |
-| `/model` | Choose Gemini 3.8/3.7/3.6 Flash or Claude Sonnet/Opus 4.6 (owner only) |
+| `/model` | Current AGY models, one entry per model (owner only) |
 | `/reasoning` | Set reasoning effort (`low`, `medium`, `high`; owner only) |
 | `/mood` | Current emotional state and relationship level |
 | `/memory` | View saved facts and long-term memory |

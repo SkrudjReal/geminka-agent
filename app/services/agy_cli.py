@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
@@ -35,9 +36,29 @@ class AgyNoResponseError(AgyCliError):
     retryable = False
 
 
-def cli_model_name(model: str, effort: str) -> str:
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def model_family(model: str) -> str:
+    return re.sub(r"-(?:low|medium|high|xhigh|max)$", "", model)
+
+
+def model_effort(model: str) -> str | None:
+    suffix = model.rsplit("-", 1)[-1]
+    return suffix if suffix in EFFORTS else None
+
+
+def cli_model_name(model: str, effort: str, catalog: list[str] | None = None) -> str:
     """Map Geminka's provider-prefixed model name to the CLI catalog."""
     name = model.strip().removeprefix("google-antigravity/")
+    if catalog is not None:
+        variants = [item for item in catalog if model_family(item) == model_family(name)]
+        if not variants:
+            raise AgyCliError("Модель недоступна в AGY. Обнови список через /model.")
+        return next((item for item in variants if model_effort(item) == effort),
+                    next((item for item in variants if model_effort(item) == "medium"), variants[0]))
+    if name.startswith(("gemini-", "claude-")) and re.search(r"-(?:low|medium|high|xhigh)$", name):
+        return re.sub(r"-(?:low|medium|high|xhigh)$", f"-{effort}", name)
     if name.startswith("gemini-") and name.endswith("-flash"):
         return f"{name}-{effort}"
     return name
@@ -85,6 +106,8 @@ class AgyCliClient:
         self.sandbox_enabled = sandbox_enabled
         self._one_shots: dict[int, _Session] = {}
         self._lifecycle_lock = asyncio.Lock()
+        self.model_labels: dict[str, str] = {}
+        self._catalog: list[str] = []
 
     async def aclose(self) -> None:
         async with self._lifecycle_lock:
@@ -147,6 +170,8 @@ class AgyCliClient:
         return process.returncode == 0 and b"gemini-" in stdout
 
     async def list_models(self) -> list[str]:
+        self.model_labels = {}
+        self._catalog = []
         try:
             process = await asyncio.create_subprocess_exec(
                 *self._sandbox_command(["models"]),
@@ -159,15 +184,17 @@ class AgyCliClient:
         except (OSError, asyncio.TimeoutError, AgyCliError):
             return []
 
+        if process.returncode != 0:
+            return []
         result: list[str] = []
         for raw_line in stdout.decode("utf-8", errors="replace").splitlines():
-            name = raw_line.strip()
-            if not name or name.startswith("Available"):
+            name, _, label = raw_line.strip().partition("\t")
+            if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._/-]*", name):
                 continue
-            if name.startswith("gemini-") and name.rsplit("-", 1)[-1] in {"low", "medium", "high"}:
-                name = name.rsplit("-", 1)[0]
             if name not in result:
                 result.append(name)
+                self.model_labels[name] = label.strip() or name
+        self._catalog = result
         return result
 
     async def stream(
@@ -182,7 +209,10 @@ class AgyCliClient:
         tool_context: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield response deltas from one direct CLI turn."""
-        cli_model = cli_model_name(model, effort)
+        if not self._catalog:
+            await self.list_models()
+        cli_model = cli_model_name(model, effort, self._catalog)
+        effort = model_effort(cli_model) or effort
         current = dict(messages[-1])
         if turn_context:
             current["content"] = (

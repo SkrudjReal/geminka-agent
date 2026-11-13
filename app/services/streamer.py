@@ -55,6 +55,7 @@ PHOTO_PAIR_TAG_RE = re.compile(r"<tg-send-photos\s*/?>|<tg-photo-pair\s*/?>", re
 CUSTOM_PHOTO_TAG_RE = re.compile(r"<tg-photo\s+([^>]+)\s*/?>", re.IGNORECASE)
 FILE_TAG_RE = re.compile(r"<tg-file\s+([^>]+)\s*/?>", re.IGNORECASE)
 GIF_TAG_RE = re.compile(r"<tg-gif\s+([^>]+)\s*/?>", re.IGNORECASE)
+MOOD_TAG_RE = re.compile(r"<tg-mood\s+([^>]+)\s*/?>", re.IGNORECASE)
 
 _BLOCKED_FILE_NAMES = {
     ".env",
@@ -517,10 +518,28 @@ def strip_delivery_tags(text: str) -> str:
         CUSTOM_PHOTO_TAG_RE,
         FILE_TAG_RE,
         GIF_TAG_RE,
+        MOOD_TAG_RE,
     ):
         text = pattern.sub("", text)
     text = INCOMPLETE_CONTROL_TAG_RE.sub("", text)
     return text.strip()
+
+
+def _parse_optional_int(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return None
+
+
+def parse_mood_tag(attrs_str: str) -> tuple[str | None, int | None, int | None]:
+    """Parse state/mood, delta, and warmth attributes from a <tg-mood .../> tag."""
+    state_name = _tag_attr(attrs_str, "state") or _tag_attr(attrs_str, "mood")
+    delta = _parse_optional_int(_tag_attr(attrs_str, "delta"))
+    warmth = _parse_optional_int(_tag_attr(attrs_str, "warmth"))
+    return state_name, delta, warmth
 
 
 def _tag_attr(attrs_str: str, name: str) -> str | None:
@@ -770,6 +789,28 @@ class TelegramStreamConsumer:
         if react_match:
             reaction_attrs = react_match.group(1)
             reaction_obj = resolve_reaction(reaction_attrs)
+
+        # 4. Apply model-driven mood adjustments (<tg-mood state="..." delta="..."/>) outside code spans
+        if self.user_id:
+            from app.core.state import state_store
+
+            if not state_store.is_debug_mode(self.user_id):
+                outside_code = "".join(
+                    part
+                    for idx, part in enumerate(re.split(r"(```[\s\S]*?```|`[^`\n]*`)", final_raw))
+                    if idx % 2 == 0
+                )
+                mood_matches = list(MOOD_TAG_RE.finditer(outside_code))
+                if mood_matches:
+                    from app.engines.emotional import emotion_engine
+
+                    state_name, delta, warmth = parse_mood_tag(mood_matches[-1].group(1))
+                    emotion_engine.apply_model_mood(
+                        self.user_id,
+                        state_name=state_name,
+                        delta=delta,
+                        warmth=warmth,
+                    )
 
         final_text = self._emoji_policy(strip_delivery_tags(final_raw))
         if isinstance(reaction_obj, ReactionTypeCustomEmoji) and reaction_obj.custom_emoji_id not in self.allowed_emojis:

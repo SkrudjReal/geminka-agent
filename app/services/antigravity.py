@@ -17,7 +17,7 @@ import httpx
 from app.core import config
 from app.core.context import ContextManager, context_manager
 from app.core.state import StateStore, state_store
-from app.services.agy_cli import AgyCliClient, AgyCliError
+from app.services.agy_cli import EFFORTS, AgyCliClient, AgyCliError, model_effort, model_family
 from app.services.rag import RAGMemoryEngine, rag_engine
 from app.services.summaries import SummaryWorker
 
@@ -30,7 +30,7 @@ AVAILABLE_MODELS = [
     "google-antigravity/claude-sonnet-4-6",
     "google-antigravity/claude-opus-4-6",
 ]
-REASONING_LEVELS = {"low", "medium", "high"}
+REASONING_LEVELS = set(EFFORTS)
 
 # Reasoning effort defaults:
 DEFAULT_REASONING_EFFORT = "high"
@@ -96,6 +96,9 @@ class AntigravityClient:
         self.memories = memories
         self.summaries = SummaryWorker(memories, self._summary_completion)
         self._memory_snapshots: dict[int, str] = {}
+        self._available_models = set(AVAILABLE_MODELS) if self._use_legacy_omp else set()
+        self._model_labels: dict[str, str] = {}
+        self._model_efforts: dict[str, set[str]] = {}
         self._owns_client = http_client is None
 
         headers = {}
@@ -160,11 +163,14 @@ class AntigravityClient:
             await self._agy.set_sandbox_mode(enabled)
 
     def get_user_model(self, user_id: int) -> str:
-        return self.store.get_preferences(user_id)["model"] or config.settings.default_model
+        model = self.store.get_preferences(user_id)["model"] or config.settings.default_model
+        return model_family(model) if self._agy else model
 
     def set_user_model(self, user_id: int, model_name: str) -> None:
         normalized = config.normalize_model_name(model_name)
-        if normalized not in AVAILABLE_MODELS:
+        if self._agy:
+            normalized = model_family(normalized)
+        if normalized not in self._available_models:
             raise ValueError(f"Unsupported model: {model_name}")
         self.store.set_preference(user_id, "model", normalized)
         self.store.set_conversation_id(user_id, None)
@@ -172,17 +178,27 @@ class AntigravityClient:
             self._agy.reset_user(user_id)
 
     def get_user_reasoning(self, user_id: int) -> str:
-        return (
+        effort = (
             self.store.get_preferences(user_id)["reasoning"]
             or config.settings.reasoning_effort
             or DEFAULT_REASONING_EFFORT
         )
+        levels = self.reasoning_levels(user_id)
+        if levels and effort not in levels:
+            return "medium" if "medium" in levels else levels[0]
+        return effort
+
+    def reasoning_levels(self, user_id: int) -> list[str]:
+        available = self._model_efforts.get(self.get_user_model(user_id), set()) if self._agy else REASONING_LEVELS
+        return [level for level in EFFORTS if level in available]
 
     def set_user_reasoning(self, user_id: int, effort: str) -> None:
         normalized = effort.strip().lower()
-        if normalized not in REASONING_LEVELS:
-            raise ValueError(f"Unsupported reasoning effort: {effort}. Must be one of {REASONING_LEVELS}")
+        if normalized not in self.reasoning_levels(user_id):
+            raise ValueError(f"Unsupported reasoning effort: {effort}")
         self.store.set_preference(user_id, "reasoning", normalized)
+        if self._agy:
+            self._agy.reset_user(user_id)
 
     def clear_history(self, user_id: int) -> None:
         self.contexts.clear_user_context(user_id)
@@ -215,12 +231,23 @@ class AntigravityClient:
         """Fetch available models from OMP."""
         if self._agy:
             cli_models = await self._agy.list_models()
-            return [
-                f"google-antigravity/{model}"
-                if model.startswith(("gemini-", "claude-"))
-                else model
-                for model in cli_models
-            ] or AVAILABLE_MODELS
+            models = []
+            self._model_labels = {}
+            self._model_efforts = {}
+            for raw in cli_models:
+                family = model_family(raw)
+                model = f"google-antigravity/{family}" if raw.startswith(("gemini-", "claude-")) else family
+                if model not in models:
+                    models.append(model)
+                    self._model_labels[model] = re.sub(
+                        r"\s*\((?:low|medium|high|xhigh|max)\)$", "", self._agy.model_labels.get(raw, family),
+                        flags=re.IGNORECASE,
+                    )
+                self._model_efforts.setdefault(model, set())
+                if effort := model_effort(raw):
+                    self._model_efforts[model].add(effort)
+            self._available_models = set(models)
+            return models
         try:
             response = await self._client.get(self._get_endpoint("models"), timeout=5.0)
             response.raise_for_status()
@@ -230,9 +257,16 @@ class AntigravityClient:
                 for item in data
                 if isinstance(item, dict) and isinstance(item.get("id"), str)
             ]
+            self._available_models = set(models or AVAILABLE_MODELS)
             return models or AVAILABLE_MODELS
         except (httpx.HTTPError, ValueError, KeyError):
+            self._available_models = set(AVAILABLE_MODELS)
             return AVAILABLE_MODELS
+
+    def model_label(self, model: str) -> str:
+        if self._agy:
+            return self._model_labels.get(model_family(model), model_family(model))
+        return model
 
     async def _backoff(self, attempt: int) -> None:
         delay = min(2**attempt, 16) + random.uniform(0, 0.25)

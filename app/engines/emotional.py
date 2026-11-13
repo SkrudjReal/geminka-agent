@@ -31,6 +31,37 @@ MOOD_DEFINITIONS = {
     "cold": ("Холодное / Сдержанное", "Отстранённое, сухое, без эмодзи, дистанция", 15),
 }
 
+MOOD_ALIASES = {
+    "warm": "affectionate",
+    "angry": "pouty",
+    "teasing": "playful",
+    "sad": "thoughtful",
+}
+
+_INSULT_WORDS = (
+    "дура", "идиотка", "тупая", "глупая", "бесишь", "надоела",
+    "отстань", "заткнись", "бесполезная", "пошла вон", "клумба тупая",
+)
+_POUT_TRIGGERS = (
+    "обиделась", "обида", "почему так сухо", "надулась",
+    "бебебе", "бебе", "плачь", "реви", "успокойся", "просто стикер",
+)
+_AFFECTION_WORDS = (
+    "люблю", "милая", "умница", "красотка", "молодец",
+    "спасибо", "лучшая", "солнышко", "🥺", "💖", "🥰",
+)
+_PLAYFUL_WORDS = ("ахах", "лол", "прикол", "кринж", "дразн", "кот", "мяу", "😈", "👅", "😉")
+_TECH_WORDS = ("код", "архитектур", "баг", "фикс", "питон", "проект", "база", "сервер")
+_TIRED_WORDS = ("устал", "грустн", "тяжело", "плохо", "поговори", "спать")
+
+
+def _clamp(value: int, low: int = 0, high: int = 100) -> int:
+    return max(low, min(high, value))
+
+
+def _contains_any(text_lower: str, tokens: tuple[str, ...]) -> bool:
+    return any(token in text_lower for token in tokens)
+
 RELATIONSHIP_STAGES = [
     (0, "Знакомые", "Сдержанное, вежливое, соблюдает границы"),
     (25, "Приятели", "Неформальное, лёгкое, первые подколы и шутки"),
@@ -73,16 +104,28 @@ class EmotionalEngine:
         self.states: Dict[str, EmotionalState] = {}
         self.load()
 
+    @staticmethod
+    def _user_key(user_id: int) -> str:
+        if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+            raise ValueError("Mood привязан к положительному Telegram user_id, не к chat_id.")
+        return str(user_id)
+
     def load(self) -> None:
         if self.state_file.exists():
             try:
                 data = load_json(self.state_file, {})
                 valid_fields = {f.name for f in fields(EmotionalState)}
                 for uid_str, s_dict in data.items():
+                    try:
+                        key = "default" if uid_str == "default" else self._user_key(int(uid_str))
+                    except (TypeError, ValueError):
+                        continue
                     if "warmth" not in s_dict:
                         s_dict["warmth"] = 96
                     filtered_dict = {k: v for k, v in s_dict.items() if k in valid_fields}
-                    self.states[uid_str] = EmotionalState(**filtered_dict)
+                    if key != "default":
+                        filtered_dict["user_id"] = int(key)
+                    self.states[key] = EmotionalState(**filtered_dict)
                 logger.info(f"Loaded emotional states for {len(self.states)} users.")
             except Exception as e:
                 logger.warning(f"Failed to load emotional states: {e}")
@@ -95,7 +138,7 @@ class EmotionalEngine:
             logger.warning(f"Failed to save emotional states: {e}")
 
     def get_state(self, user_id: int, *, persist: bool = True) -> EmotionalState:
-        uid_str = str(user_id)
+        uid_str = self._user_key(user_id)
         if uid_str not in self.states:
             if "default" in self.states:
                 d = self.states["default"]
@@ -114,7 +157,7 @@ class EmotionalEngine:
         return self.states[uid_str]
 
     def reset_state(self, user_id: int) -> EmotionalState:
-        uid_str = str(user_id)
+        uid_str = self._user_key(user_id)
         self.states[uid_str] = EmotionalState(user_id=user_id)
         self.save()
         return self.states[uid_str]
@@ -128,31 +171,38 @@ class EmotionalEngine:
 
         text_lower = user_text.lower()
 
-        # Dynamic adjustments based on conversation signals
-        if any(w in text_lower for w in ["люблю", "милая", "умница", "красотка", "молодец", "спасибо", "лучшая", "🥺", "💖", "🥰"]):
-            state.affinity = min(200, state.affinity + 2)
-            state.affection = min(100, state.affection + 5)
-            state.mood = "affectionate"
-            state.warmth = min(100, state.warmth + 10)
-        elif any(w in text_lower for w in ["ахах", "лол", "прикол", "кринж", "дразн", "кот", "мяу", "😈", "👅", "😉"]):
-            state.affinity = min(200, state.affinity + 1)
-            state.mood = "playful"
-            state.energy = min(100, state.energy + 4)
-            state.warmth = min(100, state.warmth + 5)
-        elif any(w in text_lower for w in ["код", "архитектур", "баг", "фикс", "питон", "проект", "база", "сервер"]):
-            state.mood = "focused"
-        elif any(w in text_lower for w in ["устал", "грустн", "тяжело", "плохо", "поговори", "спать"]):
-            state.mood = "thoughtful"
-            state.affection = min(100, state.affection + 4)
-            state.warmth = min(100, state.warmth + 5)
-        elif any(w in text_lower for w in ["дура", "отстань", "бесишь", "надоела", "глупая", "заткнись"]):
+        # Evaluate signals independently so praise or technical keywords never mask insults.
+        has_insult = _contains_any(text_lower, _INSULT_WORDS)
+        has_pout = _contains_any(text_lower, _POUT_TRIGGERS)
+        has_affection = _contains_any(text_lower, _AFFECTION_WORDS)
+        has_playful = _contains_any(text_lower, _PLAYFUL_WORDS)
+        has_tech = _contains_any(text_lower, _TECH_WORDS)
+        has_tired = _contains_any(text_lower, _TIRED_WORDS)
+
+        if has_insult:
             state.affinity = max(0, state.affinity - 5)
             state.affection = max(0, state.affection - 15)
             state.mood = "cold"
             state.warmth = max(0, state.warmth - 30)
-        elif any(w in text_lower for w in ["обиделась", "обида", "почему так сухо", "надулась"]):
+        elif has_pout:
             state.mood = "pouty"
             state.warmth = max(20, state.warmth - 10)
+        elif has_affection:
+            state.affinity = min(200, state.affinity + 2)
+            state.affection = min(100, state.affection + 5)
+            state.mood = "affectionate"
+            state.warmth = min(100, state.warmth + 10)
+        elif has_playful:
+            state.affinity = min(200, state.affinity + 1)
+            state.mood = "playful"
+            state.energy = min(100, state.energy + 4)
+            state.warmth = min(100, state.warmth + 5)
+        elif has_tech:
+            state.mood = "focused"
+        elif has_tired:
+            state.mood = "thoughtful"
+            state.affection = min(100, state.affection + 4)
+            state.warmth = min(100, state.warmth + 5)
         else:
             state.affinity = min(200, state.affinity + 1)
 
@@ -169,6 +219,58 @@ class EmotionalEngine:
                 state.warmth = 50
 
         self.save()
+        return state
+
+    def apply_model_mood(
+        self,
+        user_id: int,
+        *,
+        state_name: str | None = None,
+        delta: int | None = None,
+        warmth: int | None = None,
+        persist: bool = True,
+    ) -> EmotionalState | None:
+        """Applies a model-emitted <tg-mood .../> adjustment to the user's emotional state."""
+        normalized_mood = None
+        if state_name:
+            candidate = MOOD_ALIASES.get(state_name.strip().lower(), state_name.strip().lower())
+            if candidate in MOOD_DEFINITIONS:
+                normalized_mood = candidate
+
+        if normalized_mood is None and delta is None and warmth is None:
+            return None
+
+        state = self.get_state(user_id, persist=persist)
+        state.last_interaction_ts = time.time()
+
+        if normalized_mood:
+            state.mood = normalized_mood
+
+        if warmth is not None:
+            state.warmth = _clamp(warmth, 0, 100)
+        elif delta is not None:
+            clamped_delta = _clamp(delta, -100, 100)
+            state.warmth = _clamp(state.warmth + clamped_delta, 0, 100)
+            state.affection = _clamp(state.affection + clamped_delta // 3, 0, 100)
+            if clamped_delta <= -20:
+                state.affinity = max(0, state.affinity - 2)
+            elif clamped_delta >= 15:
+                state.affinity = min(200, state.affinity + 1)
+            if normalized_mood == "cold":
+                state.warmth = min(state.warmth, 25)
+            elif normalized_mood == "pouty" and clamped_delta < 0:
+                state.warmth = min(state.warmth, 50)
+        elif normalized_mood:
+            anchor = MOOD_DEFINITIONS[normalized_mood][2]
+            if normalized_mood == "cold":
+                state.warmth = min(state.warmth, 20)
+            elif normalized_mood == "pouty":
+                state.warmth = min(state.warmth, 45) if state.warmth > 45 else _clamp(int(state.warmth * 0.3 + anchor * 0.7))
+            else:
+                state.warmth = _clamp(int(state.warmth * 0.4 + anchor * 0.6))
+
+        if persist:
+            self.save()
         return state
 
     def update_from_reaction(self, user_id: int, emoji_val: str, is_custom: bool = False) -> EmotionalState:
@@ -204,21 +306,25 @@ class EmotionalEngine:
 
         # Determine warmth tone directive
         if state.warmth >= 85:
-            warmth_instruction = "Максимально тёплый, нежный, открытый тон, искренняя забота и сердечки."
+            warmth_instruction = "Максимально тёплый, нежный, открытый тон, искренняя забота и премиум-сердечки (<tg-emoji>)."
         elif state.warmth >= 65:
             warmth_instruction = "Тёплый, дружелюбный, живой тон с комфортным юмором и подколами."
         elif state.warmth >= 40:
-            warmth_instruction = "Сдержанный, слегка колючий или капризный тон (шутливая обида или лёгкая дистанция)."
+            warmth_instruction = "Сдержанный, слегка колючий или капризный тон (обида, «бебебе» или лёгкая дистанция)."
         else:
-            warmth_instruction = "Холодный, сухой, отстранённый тон, короткие ответы без лишних эмодзи."
+            warmth_instruction = "Холодный, сухой, отстранённый тон, короткие или односложные ответы («ок.», «нет», «не имею понятия») без эмодзи и ласкательных слов."
 
         return (
+            f"[Персональное состояние отношений с Telegram user_id={user_id}; "
+            "применяется только к этому пользователю, не к другим участникам чата. "
+            "Тег <tg-mood> изменяет только эти отношения.]\n"
             f"[Твоё текущее эмоциональное состояние и уровень теплоты/холодности]:\n"
             f"• Краткосрочное настроение: {mood_name.upper()} ({mood_desc})\n"
             f"• Уровень теплоты общения: {state.warmth}/100 ➔ {warmth_instruction}\n"
             f"• Уровень энергии: {state.energy}/100 | Нежность: {state.affection}/100\n"
             f"• Долгосрочные отношения: {stage} (Связь: {state.affinity} pts) — {stage_desc}\n"
-            f"• ПРАВИЛО: регулируй теплоту/холодность и дистанцию в ответе строго в соответствии с этими параметрами!\n"
+            f"• ПРАВИЛО: регулируй теплоту/холодность и дистанцию в ответе строго в соответствии с этими параметрами! "
+            f"При необходимости сама сдвинь состояние скрытым тегом <tg-mood state=\"...\" delta=\"...\"/>.\n"
         )
 
 

@@ -29,7 +29,7 @@ from app.core.state import state_store
 from app.engines.adaptive import adaptive_engine
 from app.engines.emotional import MOOD_DEFINITIONS, emotion_engine
 from app.engines.rp import detect_rp_command, get_random_rp_phrase
-from app.services.antigravity import AVAILABLE_MODELS, AntigravityClient
+from app.services.antigravity import AntigravityClient
 from app.services.harvester import asset_harvester
 from app.services.rag import MemoryRejected, rag_engine
 from app.services.sqlite_memory import MemoryWriteDisabled
@@ -51,7 +51,9 @@ class ChatStates(StatesGroup):
 @router.message_reaction()
 async def handle_message_reaction(event: types.MessageReactionUpdated, bot: Bot):
     """Handles reactions put by the user on the bot's messages."""
-    user_id = event.user.id if event.user else (event.actor_chat.id if event.actor_chat else 0)
+    if event.user is None:
+        return  # Anonymous channel/chat reactions have no personal Telegram user_id.
+    user_id = event.user.id
     if not check_auth(user_id):
         return
     if state_store.is_debug_mode(user_id):
@@ -113,7 +115,7 @@ async def cmd_start(message: types.Message):
     greeting = (
         '<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Привет, мой краш! Я Geminka (Columbina)** — твой живой AI-ассистент и верная собеседница на прямом ядре **agy CLI**.\n\n'
         '<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Команды управления (высвечиваются в меню по нажатию на `/`):**\n\n'
-        '• `/model` — ⚡ Выбор AI модели (`Gemini 3.8 / 3.7`, `Claude Sonnet / Opus 4.6`)\n'
+        '• `/model` — ⚡ Выбор AI модели (актуальный каталог AGY)\n'
         '• `/reasoning` — 🎯 Настройка глубины размышлений модели (`low`, `medium`, `high`)\n'
         '• `/mood` — 💖 Моё эмоциональное состояние, шкала чувств и сброс (`/mood reset`)\n'
         '• `/memory` — 📖 Долговременная память, сохранённые факты и контекст\n'
@@ -139,24 +141,27 @@ async def cmd_model(message: types.Message, antigravity_client: AntigravityClien
         await message.answer("⛔ Доступ ограничен.")
         return
 
+    models = await antigravity_client.list_omp_models()
+    if not models:
+        await message.answer("Не удалось получить актуальный список моделей AGY. Попробуй /model позже.")
+        return
+
     args = message.text.split()[1:] if message.text else []
     if args:
-        target = args[0].lower()
-        if "opus" in target:
-            new_model = "google-antigravity/claude-opus-4-6"
-        elif target in {"sonnet", "claude"}:
-            new_model = "google-antigravity/claude-sonnet-4-6"
-        elif "3.6" in target:
-            new_model = "google-antigravity/gemini-3.6-flash"
-        elif target in {"flash", "gemini", "3.7"}:
-            new_model = "google-antigravity/gemini-3.7-flash"
-        else:
-            new_model = config.normalize_model_name(target)
-
-        if new_model not in AVAILABLE_MODELS:
-            await message.answer("Неизвестная модель. Открой /model для списка доступных моделей.")
+        target = args[0].lower().removeprefix("google-antigravity/")
+        prefix = {"opus": "claude-opus", "sonnet": "claude-sonnet", "claude": "claude-sonnet",
+                  "argon": "gemini-4-argon",
+                  "hydrogen": "gemini-4-hydrogen", "orchestrator": "gemini-pro-orchestrator"}.get(target, target)
+        exact = [m for m in models if m.removeprefix("google-antigravity/") == target]
+        matches = exact or [m for m in models if m.removeprefix("google-antigravity/").startswith(prefix + "-")]
+        if target == "flash":
+            matches = [m for m in models if m.removeprefix("google-antigravity/").startswith("gemini-")
+                       and ("-flash-" in m or m.endswith("-flash"))]
+        if not matches:
+            await message.answer("Неизвестная модель. Открой /model для актуального списка AGY.")
             return
-
+        effort = antigravity_client.get_user_reasoning(message.from_user.id)
+        new_model = next((m for m in matches if m.endswith("-" + effort)), matches[0])
         antigravity_client.set_user_model(message.from_user.id, new_model)
         msg_html = md_to_telegram_html(
             f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Модель успешно изменена на:**\n`{new_model}`'
@@ -165,46 +170,17 @@ async def cmd_model(message: types.Message, antigravity_client: AntigravityClien
         return
 
     current = antigravity_client.get_user_model(message.from_user.id)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⚡ Gemini 3.8 Flash",
-                    callback_data="set_model:google-antigravity/gemini-3.8-flash",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚡ Gemini 3.7 Flash (Default)",
-                    callback_data="set_model:google-antigravity/gemini-3.7-flash",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🎭 Claude Sonnet 4.6",
-                    callback_data="set_model:google-antigravity/claude-sonnet-4-6",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🧠 Claude Opus 4.6",
-                    callback_data="set_model:google-antigravity/claude-opus-4-6",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚡ Gemini 3.6 Flash",
-                    callback_data="set_model:google-antigravity/gemini-3.6-flash",
-                )
-            ],
-        ]
-    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=("✅ " if model == current else "") + antigravity_client.model_label(model),
+            callback_data="set_model:" + model,
+        )
+    ] for model in models])
 
     text = (
         f'<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Выбор активной модели:**\n\n'
         f"• **Текущая модель:** `{current}`\n"
-        f"• **Reasoning Effort:** `{antigravity_client.get_user_reasoning(message.from_user.id)}`\n"
-        f"• **Max Output Tokens:** `{config.MAX_OUTPUT_TOKENS}`\n\n"
+        "Мышление настраивается отдельно: /reasoning.\n\n"
         f"Выбери желаемую модель кнопкой ниже или напиши `/model sonnet` / `/model flash`:"
     )
     await message.answer(md_to_telegram_html(text), reply_markup=keyboard, parse_mode=ParseMode.HTML)
@@ -216,8 +192,9 @@ async def process_set_model(callback: types.CallbackQuery, antigravity_client: A
         await callback.answer("⛔ Только владелец может менять модель.", show_alert=True)
         return
     model_name = callback.data.split(":", 1)[1]
-    if model_name not in AVAILABLE_MODELS:
-        await callback.answer("Неизвестная модель", show_alert=True)
+    models = await antigravity_client.list_omp_models()
+    if model_name not in models:
+        await callback.answer("Модель больше недоступна. Открой /model заново.", show_alert=True)
         return
     antigravity_client.set_user_model(callback.from_user.id, model_name)
     await callback.answer(f"Модель выбрана: {model_name}")
@@ -230,62 +207,37 @@ async def process_set_model(callback: types.CallbackQuery, antigravity_client: A
         pass
 
 
-@router.message(Command("reasoning", "effort", "thinking"))
+@router.message(Command("reasoning", "resoning", "effort", "thinking"))
 async def cmd_reasoning(message: types.Message, antigravity_client: AntigravityClient):
     if not is_owner(message.from_user.id) or not check_auth(message.from_user.id):
         await message.answer("⛔ Доступ ограничен.")
         return
-
+    models = await antigravity_client.list_omp_models()
+    if not models:
+        await message.answer("Не удалось получить актуальные уровни AGY. Попробуй /reasoning позже.")
+        return
+    levels = antigravity_client.reasoning_levels(message.from_user.id)
+    if not levels:
+        await message.answer("Для этой модели AGY не предоставляет отдельных уровней мышления. Выбор модели: /model.")
+        return
     args = message.text.split()[1:] if message.text else []
     if args:
-        val = args[0].lower()
-        if val in ["low", "низкий", "1"]:
-            new_effort = "low"
-        elif val in ["high", "высокий", "3"]:
-            new_effort = "high"
-        else:
-            new_effort = "medium"
-
-        antigravity_client.set_user_reasoning(message.from_user.id, new_effort)
-        msg_html = md_to_telegram_html(
-            f'<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Уровень Reasoning Effort установлен на:** `{new_effort}`'
-        )
-        await message.answer(msg_html, parse_mode=ParseMode.HTML)
+        value = args[0].lower()
+        effort = {"низкий": "low", "1": "low", "средний": "medium", "2": "medium",
+                  "высокий": "high", "3": "high"}.get(value, value)
+        if effort not in levels:
+            await message.answer("Доступные уровни этой модели: " + ", ".join(levels))
+            return
+        antigravity_client.set_user_reasoning(message.from_user.id, effort)
+        await message.answer(f"Мышление: {effort}")
         return
-
     current = antigravity_client.get_user_reasoning(message.from_user.id)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=f"{'✅ ' if current == 'low' else ''}⚡ Low (Быстрый)",
-                    callback_data="set_reasoning:low",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"{'✅ ' if current == 'medium' else ''}🎯 Medium (Рекомендуемый / Баланс)",
-                    callback_data="set_reasoning:medium",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=f"{'✅ ' if current == 'high' else ''}🧠 High (Глубокий анализ)",
-                    callback_data="set_reasoning:high",
-                )
-            ],
-        ]
-    )
-
-    text = (
-        f'<tg-emoji emoji-id="5359450562079242286">🌟</tg-emoji> **Настройка Reasoning Effort (Глубина мыслей):**\n\n'
-        f"• **Текущий уровень:** `{current}`\n\n"
-        f'<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Уровни:**\n'
-        f"• `low` — быстрые минимальные размышления\n"
-        f"• `medium` — **оптимальный баланс** качества и скорости (рекомендация скилла)\n"
-        f"• `high` — глубокий анализ кода и сложных задач\n\n"
-        f"Выбери уровень кнопкой ниже или напиши `/reasoning medium` / `/reasoning high`:"
-    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=("✅ " if level == current else "") + level,
+                             callback_data="set_reasoning:" + level)
+    ] for level in levels])
+    model = antigravity_client.model_label(antigravity_client.get_user_model(message.from_user.id))
+    text = f"**Мышление для {model}:**\nТекущий уровень: `{current}`\nВыбери уровень или напиши `/reasoning high`."
     await message.answer(md_to_telegram_html(text), reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
@@ -294,19 +246,15 @@ async def process_set_reasoning(callback: types.CallbackQuery, antigravity_clien
     if not is_owner(callback.from_user.id) or not check_auth(callback.from_user.id):
         await callback.answer("⛔ Только владелец может менять reasoning.", show_alert=True)
         return
-    effort_val = callback.data.split(":", 1)[1]
-    if effort_val not in {"low", "medium", "high"}:
-        await callback.answer("Неизвестный уровень", show_alert=True)
+    effort = callback.data.split(":", 1)[1]
+    await antigravity_client.list_omp_models()
+    if effort not in antigravity_client.reasoning_levels(callback.from_user.id):
+        await callback.answer("Уровень недоступен. Открой /reasoning заново.", show_alert=True)
         return
-    antigravity_client.set_user_reasoning(callback.from_user.id, effort_val)
-    await callback.answer(f"Reasoning установлен: {effort_val}")
-    try:
-        msg_html = md_to_telegram_html(
-            f'<tg-emoji emoji-id="5456184310895748720">✨</tg-emoji> **Уровень Reasoning Effort обновлен:**\n`{effort_val}`'
-        )
-        await callback.message.edit_text(msg_html, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
+    antigravity_client.set_user_reasoning(callback.from_user.id, effort)
+    await callback.answer(f"Мышление: {effort}")
+    if callback.message:
+        await callback.message.edit_text(f"Мышление: {effort}")
 
 
 @router.message(Command("mood", "emotions", "relationship", "reset_mood", "mood_reset"))
@@ -346,7 +294,7 @@ async def cmd_mood(message: types.Message, command: CommandObject | None = None)
     mood_display = mood_icons.get(state.mood, state.mood)
 
     text = (
-        f"🌸 **Эмоциональное состояние Geminka:**\n\n"
+        f"🌸 **Эмоциональное состояние Geminka в общении с тобой:**\n\n"
         f"• **Настроение:** `{mood_display}`\n"
         f"  _{mood_ru}_\n"
         f"• **Теплота общения:** `{state.warmth}/100` 🔥\n"
@@ -629,7 +577,7 @@ async def cmd_help(message: types.Message):
     help_text = (
         '<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Справочник команд и возможностей Geminka:**\n\n'
         '• `/start` — главное меню и список команд\n'
-        '• `/model` — выбор активной модели (Gemini 3.8 / 3.7 Flash, Claude Sonnet / Opus 4.6)\n'
+        '• `/model` — выбор активной модели (актуальный каталог AGY)\n'
         '• `/reasoning` — настройка уровня размышлений (low / medium / high)\n'
         '• `/mood` — текущее настроение, теплота и статус отношений (`/mood reset` для сброса)\n'
         '• `/memory` — просмотр сохранённых фрагментов долговременной памяти\n'
@@ -1095,11 +1043,12 @@ async def _prepare_message(
                 "• Пользователь отправил стикер. Ответь короткой живой репликой вместе с подходящим дополняющим стикером (<tg-sticker .../>) из твоих сохранённых паков (не копируя тот же самый)."
             )
 
-    # Update emotional state
+    # Update emotional state using the user's own text/sticker emoji (excluding quoted wrappers)
     if debug_mode:
         emotional_context = ""
     else:
-        emotion_engine.update_from_input(message.from_user.id, raw_user_content)
+        emotion_input = user_text or (message.sticker.emoji if message.sticker and message.sticker.emoji else "")
+        emotion_engine.update_from_input(message.from_user.id, emotion_input)
         emotional_context = emotion_engine.format_prompt_context(message.from_user.id)
     emotional_context = "\n".join(part for part in (emotional_context, style_hint) if part)
 

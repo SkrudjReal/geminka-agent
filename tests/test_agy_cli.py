@@ -36,6 +36,7 @@ async def test_success_without_any_response_is_not_silent_or_retryable():
 @pytest.mark.asyncio
 async def test_live_session_bootstrap_updates_and_fresh_memory(monkeypatch):
     client = AgyCliClient()
+    client._catalog = ["gemini"]
     session = _Session(SimpleNamespace(returncode=None), "gemini", "low", asyncio.Lock())
     sent = []
 
