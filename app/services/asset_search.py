@@ -11,6 +11,7 @@ import snowballstemmer
 from app.core import config
 from app.core.files import load_json
 from app.services.harvester import AssetHarvester, asset_harvester, load_default_emojis
+from app.services.sticker_policy import allowed
 from app.services.thesaurus import thesaurus
 
 _RUSSIAN = snowballstemmer.stemmer("russian")
@@ -88,6 +89,8 @@ class AssetSearch:
             db.execute("CREATE VIRTUAL TABLE assets USING fts5(kind UNINDEXED, payload UNINDEXED, tags, description, terms)")
             seen = set()
             for kind, item, source in records:
+                if kind == "sticker" and not allowed(item):
+                    continue
                 identity = (kind, source, item.get("custom_emoji_id") or item.get("file_unique_id") or item.get("file_id"))
                 if identity in seen:
                     continue

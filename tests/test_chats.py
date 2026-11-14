@@ -11,7 +11,7 @@ from app.core.context import ContextManager
 from app.core.state import StateStore
 from app.services.agy_cli import AgyCliClient
 from app.services.antigravity import AntigravityClient
-from app.services.topics import TopicManager
+from app.services.topics import DEFAULT_PREFIXES, TopicManager
 
 
 @pytest.fixture
@@ -37,7 +37,8 @@ def test_prefix_and_persistence(manager):
     manager.add_chat(-100123, "Group", 1)
     assert manager.strip_prefix("КОЛОМБИНА, привет") == "привет"
     assert manager.strip_prefix("клумба привет") == "привет"
-    for text in ("привет коломбина", "коломбинация привет", "привет"):
+    assert manager.strip_prefix("привет коломбина") == "привет коломбина"
+    for text in ("коломбинация привет", "привет"):
         assert manager.strip_prefix(text) is None
     manager.set_prefixes(["Астра", "астра", "Моя муза"])
     assert manager.strip_prefix("моя муза: привет") == "привет"
@@ -51,6 +52,54 @@ def test_prefix_and_persistence(manager):
     restored.remove_chat(-100123)
     assert not restored.is_chat_active(-100123)
     assert restored.is_topic_active(-100123, 7)
+
+
+@pytest.mark.parametrize("prefix", [
+    "геминка", "ГЕМИНКА", "колУмбина", "клумба", "коломбина",
+    "геминке", "геминку", "геминкой", "геминки",
+    "колумбине", "коломбину", "клумбы", "клумбою",
+    "коломбинка", "коломбинки", "коломбинке", "коломбинку", "коломбинкой", "коломбинкою",
+    "колумбинка", "колумбинки", "колумбинке", "колумбинку", "колумбинкой", "колумбинкою",
+])
+def test_default_nicknames_and_declensions(manager, prefix):
+    assert manager.strip_prefix(f"{prefix}, привет") == "привет"
+
+
+@pytest.mark.parametrize("text", [
+    "сколько тебе лет клумба", "привет, геминка, как дела?", "А КОЛУМБИНА что думает?",
+    "вопрос к коломбине", "я спросил геминку", "эй (клумба), ответь",
+])
+def test_nickname_anywhere_triggers_without_mangling_sentence(manager, text):
+    manager.add_chat(-100123, "Group", 1)
+    assert manager.strip_prefix(text) == text
+    assert manager.should_answer(-100123, None, text)
+    assert not manager.should_answer(-100999, None, text)
+
+
+@pytest.mark.parametrize("text", ["это суперклумба", "не_клумба", "коломбинация", "это геминка123"])
+def test_embedded_nickname_does_not_trigger(manager, text):
+    manager.add_chat(-100123, "Group", 1)
+    assert not manager.should_answer(-100123, None, text)
+
+
+@pytest.mark.parametrize("text", ["гемоглобин привет", "геминизация", "гемка123", "колумбинация",
+                                 "гем привет", "ГЕМИНИ, привет", "гемка привет", "гемке привет"])
+def test_nicknames_only_match_whole_words(manager, text):
+    assert manager.strip_prefix(text) is None
+
+
+def test_old_defaults_upgrade_but_custom_names_are_preserved(tmp_path):
+    from app.core.files import atomic_write_json
+
+    path = tmp_path / "topics.json"
+    atomic_write_json(path, {"prefixes": ["коломбина", "клумба"]})
+    assert TopicManager(path).data["prefixes"] == DEFAULT_PREFIXES
+    atomic_write_json(path, {"prefixes": ["коломбина", "клумба", "геминка", "гемини", "гемка", "гем", "колумбина"]})
+    assert TopicManager(path).data["prefixes"] == DEFAULT_PREFIXES
+    atomic_write_json(path, {"prefixes": ["астра"]})
+    manager = TopicManager(path)
+    assert manager.data["prefixes"] == ["астра"]
+    assert manager.strip_prefix("гем привет") is None
 
 
 @pytest.mark.asyncio
@@ -70,10 +119,63 @@ async def test_group_requires_prefix_but_topic_does_not(manager):
     assert await send(message("привет", thread=7)) == "handled"
     assert await send(message("привет", thread=8)) is None
     assert await send(message("коломбина привет", chat_id=-100999)) is None
-    assert await send(message("коломбина привет", user_id=3)) is None
+    assert await send(message("коломбина привет", user_id=3)) == "handled"
     bot_message = message("коломбина привет")
     bot_message = bot_message.model_copy(update={"from_user": types.User(id=2, is_bot=True, first_name="Bot")})
-    assert await send(bot_message) is None
+    assert await send(bot_message) == "handled"
+    assert await middleware(handler, bot_message, {"event_from_user": bot_message.from_user, "bot": SimpleNamespace(id=2)}) is None
+
+
+@pytest.mark.asyncio
+async def test_reply_to_this_bot_is_a_trigger_but_other_replies_are_not(manager):
+    manager.add_chat(-100123, "Group", 1)
+    handler = AsyncMock(return_value="handled")
+    middleware = middlewares.OwnerAuthMiddleware()
+    original = message("Ответ бота").model_copy(update={
+        "from_user": types.User(id=99, is_bot=True, first_name="Geminka"),
+    })
+    event = message("продолжай", user_id=777).model_copy(update={"reply_to_message": original})
+    data = {"event_from_user": event.from_user, "bot": SimpleNamespace(id=99)}
+    assert await middleware(handler, event, data) == "handled"
+    assert handlers.group_message_allowed(event, 99)
+    assert await middleware(handler, event, {**data, "bot": SimpleNamespace(id=98)}) is None
+    event = event.model_copy(update={"chat": types.Chat(id=-100999, type="supergroup")})
+    assert await middleware(handler, event, data) is None
+
+
+@pytest.mark.asyncio
+async def test_private_chat_is_owner_only_even_when_allow_all_is_enabled(manager, monkeypatch):
+    monkeypatch.setattr("app.core.config.settings", Settings.from_env({
+        "TELEGRAM_OWNER_ID": "1", "TELEGRAM_ALLOW_ALL_USERS": "true",
+    }))
+    middleware = middlewares.OwnerAuthMiddleware()
+    handler = AsyncMock(return_value="handled")
+    for uid in (2, 777):
+        event = message("привет", user_id=uid, chat_id=uid).model_copy(update={
+            "chat": types.Chat(id=uid, type="private"),
+        })
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(types.Message, "answer", AsyncMock())
+            assert await middleware(handler, event, {"event_from_user": event.from_user}) is None
+    event = message("привет", user_id=1, chat_id=1).model_copy(update={"chat": types.Chat(id=1, type="private")})
+    assert await middleware(handler, event, {"event_from_user": event.from_user}) == "handled"
+
+
+def test_owner_group_always_uses_mod_and_drops_private_environment(manager, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr("app.services.agy_cli.agy_sandbox_command",
+                        lambda args, root, **kwargs: calls.append(kwargs) or args)
+    client = AgyCliClient(project_dir=tmp_path, sandbox_enabled=False)
+    args = client._launch_command("gemini", "low", {"requester_id": "1", "chat_id": "-100123"})
+    assert calls[-1] == {"read_only": True, "group_id": -100123}
+    assert "--sandbox" in args and args[args.index("--mode") + 1] == "plan"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "private-bot-token")
+    monkeypatch.setenv("TG_COLLECTOR_MCP_TOKEN", "full-archive-token")
+    env = client._tool_env({"requester_id": "777", "chat_id": "-100123",
+                            "group_broker_token": "chat-only-capability", "group_broker_url": "http://127.0.0.1:1/mcp"})
+    assert "TELEGRAM_BOT_TOKEN" not in env and "TG_COLLECTOR_MCP_TOKEN" not in env
+    assert env["GEMINKA_GROUP_MODE"] == "1"
+    assert env["GEMINKA_GROUP_BROKER_TOKEN"] == "chat-only-capability"
 
 
 @pytest.mark.asyncio
@@ -112,11 +214,11 @@ async def test_chat_handlers_validate_group_and_owner(manager):
     assert not await handlers.add_group_chat(owner, bot, "https://t.me/+invite")
     stranger = SimpleNamespace(from_user=SimpleNamespace(id=2), answer=AsyncMock())
     await handlers.cmd_prefix(stranger, CommandObject(command="prefix", args="new"))
-    assert manager.data["prefixes"] == ["коломбина", "клумба"]
+    assert manager.data["prefixes"] == DEFAULT_PREFIXES
     await handlers.cmd_prefix(owner, CommandObject(command="prefix", args="астра, муза"))
     assert manager.data["prefixes"] == ["астра", "муза"]
     await handlers.cmd_prefix(owner, CommandObject(command="prefix", args="reset"))
-    assert manager.data["prefixes"] == ["коломбина", "клумба"]
+    assert manager.data["prefixes"] == DEFAULT_PREFIXES
 
 
 def test_nonowner_agy_cannot_write_project_even_with_sandbox_off(manager, tmp_path, monkeypatch):
@@ -211,4 +313,4 @@ def test_failed_save_does_not_activate_chat_or_prefix(manager, monkeypatch):
     assert not manager.is_chat_active(-100123)
     with pytest.raises(OSError):
         manager.set_prefixes(["new"])
-    assert manager.data["prefixes"] == ["коломбина", "клумба"]
+    assert manager.data["prefixes"] == DEFAULT_PREFIXES

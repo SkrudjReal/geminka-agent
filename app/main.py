@@ -15,6 +15,8 @@ from app.core import config
 from app.core.instance import acquire_bot_lock
 from app.core.logger import setup_logging
 from app.services.antigravity import AntigravityClient
+from app.services.chat_observer import ChatObserver
+from app.services.daily_chat import DailyChat
 
 logger = logging.getLogger("geminka-main")
 
@@ -68,7 +70,7 @@ async def main() -> None:
 
     bot = Bot(
         token=config.settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
     dp = Dispatcher(antigravity_client=antigravity_client)
 
@@ -111,9 +113,17 @@ async def main() -> None:
     # 6. Start update polling
     for user_id in antigravity_client.memories.known_users():
         antigravity_client.schedule_memory_summary(user_id)
+    antigravity_client.group_memories.resume()
+    daily_chat = DailyChat(bot, antigravity_client)
+    daily_chat.start()
+    chat_observer = ChatObserver(bot, antigravity_client)
+    dp["chat_observer"] = chat_observer
+    chat_observer.start()
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        await chat_observer.close()
+        await daily_chat.close()
         await turn_batches.close()
         await antigravity_client.aclose()
         antigravity_client.memories.close()

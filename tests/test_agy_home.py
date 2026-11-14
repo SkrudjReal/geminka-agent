@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -67,5 +68,7 @@ print('isolated')
     assert result.stdout.strip() == "isolated"
     assert (root / "AGENTS.md").read_text() == "Unrelated identity"
     assert (runtime / "conversations/keep").read_text() == "history"
-    # bwrap may create an empty file as its mountpoint; it must not copy host settings.
-    assert (runtime / "settings.json").read_text() == ""
+    # Only generated project settings are writable for AGY's atomic validation.
+    runtime_settings = json.loads((runtime / "settings.json").read_text())
+    assert "hooks" not in runtime_settings
+    assert runtime_settings["allowNonWorkspaceAccess"] is True

@@ -79,7 +79,19 @@ def _skill_path(name: str, document: str = "SKILL.md") -> Path:
 
 def _skill_access() -> bool:
     requester = _requester_id()
+    if os.getenv("GEMINKA_GROUP_MODE") == "1":
+        return _group_access()
     return requester is not None and config.settings.is_user_allowed(requester)
+
+
+def _group_access() -> bool:
+    from app.services.topics import topic_manager
+
+    requester = _requester_id()
+    chat = os.getenv("GEMINKA_CHAT_ID", "")
+    return (os.getenv("GEMINKA_GROUP_MODE") == "1" and requester is not None and requester > 0
+            and chat.startswith("-") and chat[1:].isdigit()
+            and topic_manager.is_group_configured(int(chat)))
 
 
 def _attachment_scope() -> tuple[int, int]:
@@ -199,7 +211,8 @@ async def asset_search(query: str, type: str = "all", limit: int = 5, source: st
 def _private_memory_user() -> int:
     requester = _requester_id()
     chat = os.getenv("GEMINKA_CHAT_ID", "")
-    if requester is None or chat != str(requester) or not config.settings.is_user_allowed(requester):
+    if (os.getenv("GEMINKA_GROUP_MODE") == "1" or requester is None
+            or chat != str(requester) or not config.settings.is_user_allowed(requester)):
         raise MemoryRejected("Личная память доступна только в собственном разрешённом личном чате.")
     return requester
 
@@ -526,7 +539,7 @@ async def prepare_channel_post_preview(
 
     async with Bot(
         token=config.settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     ) as bot:
         try:
             channel = await _channel_target(bot, chat_id)
@@ -637,18 +650,20 @@ async def _call_owner_method(bot: Bot, method: str, params: Mapping[str, Any]) -
 async def bot_api_call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Call one public aiogram Bot API method with JSON-compatible parameters."""
     requester_id = _requester_id()
+    if os.getenv("GEMINKA_GROUP_MODE") == "1" or os.getenv("GEMINKA_CHAT_ID", "").startswith("-"):
+        return {"ok": False, "error": "Bot API недоступен в групповом mod."}
     if requester_id is None or requester_id != config.settings.owner_user_id:
         return {"ok": False, "error": "Bot API вызовы разрешены только владельцу."}
     async with Bot(
         token=config.settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     ) as bot:
         return await _invoke(bot, method, params)
 
 
 def _collector_access() -> bool:
     owner = config.settings.owner_user_id
-    return (owner is not None and _requester_id() == owner
+    return _group_access() or (owner is not None and _requester_id() == owner
             and os.getenv("GEMINKA_CHAT_ID", "") == str(owner))
 
 

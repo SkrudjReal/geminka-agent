@@ -95,6 +95,9 @@ class AntigravityClient:
         self.contexts = contexts
         self.memories = memories
         self.summaries = SummaryWorker(memories, self._summary_completion)
+        from app.services.group_memory import GroupMemory
+
+        self.group_memories = GroupMemory(self._group_summary_completion, store=self.store)
         self._memory_snapshots: dict[int, str] = {}
         self._available_models = set(AVAILABLE_MODELS) if self._use_legacy_omp else set()
         self._model_labels: dict[str, str] = {}
@@ -116,6 +119,9 @@ class AntigravityClient:
 
     async def aclose(self) -> None:
         await self.summaries.close()
+        await self.group_memories.close()
+        if hasattr(self, "_group_collector"):
+            await self._group_collector.close()
         if hasattr(self.memories, "drain"):
             await self.memories.drain()
         if self._agy:
@@ -140,6 +146,24 @@ class AntigravityClient:
         self.contexts.add_exchange(self.conversation_scope(user_id, source), prompt, reply)
         if source.get("private", True) and source.get("key"):
             self.memories.archive(user_id, reply, role="assistant", key=source["key"] + ":reply")
+        elif source.get("key"):
+            self.group_memories.archive(source["chat_id"], user_id, reply,
+                                        role="assistant", key=source["key"] + ":reply")
+
+    async def _group_summary_completion(self, chat_id: int, user_id: int, system: str, text: str) -> str:
+        if not self._agy:
+            raise GatewayError("Group summaries require direct AGY transport")
+        client = AgyCliClient(command=self._agy.command, timeout_seconds=45, sandbox_enabled=True)
+        try:
+            chunks = [chunk async for chunk in client.stream(
+                -user_id, model=self.get_user_model(config.settings.owner_user_id or user_id),
+                effort="low", debug=True,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": text}],
+                tool_context={"requester_id": "summary", "chat_id": str(chat_id)},
+            )]
+            return "".join(chunks)
+        finally:
+            await client.aclose()
 
     async def _summary_completion(self, user_id: int, system: str, text: str) -> str:
         if not self._agy:
@@ -332,11 +356,31 @@ class AntigravityClient:
         if not self._agy and config.settings.transport == "omp" and self.store.is_sandbox_enabled():
             raise GatewayError("Sandbox требует прямой agy-транспорт. OMP не обеспечивает изоляцию сервера.")
         use_memory = memory_input is None or memory_input.get("private", True)
+        if not use_memory and not self._agy:
+            raise GatewayError("Групповой mod требует прямой AGY-транспорт и изолированную песочницу.")
+        tools_context = {
+            "requester_id": str(user_id),
+            "chat_id": str(memory_input.get("chat_id", user_id) if memory_input else user_id),
+        }
+        if not use_memory:
+            from app.services.group_collector import GroupCollectorBroker
+            if not hasattr(self, "_group_collector"):
+                self._group_collector = GroupCollectorBroker(group_memory=self.group_memories)
+            try:
+                tools_context.update(await self._group_collector.credentials(int(tools_context["chat_id"])))
+            except Exception as exc:
+                logger.warning("Optional group archive unavailable (%s)", type(exc).__name__)
         settings_user = user_id if use_memory else (config.settings.owner_user_id or user_id)
         model = self.get_user_model(settings_user)
         reasoning_effort = self._ensure_reasoning_effort(model, self.get_user_reasoning(settings_user))
         debug_mode = self.store.is_debug_mode(user_id)
         context_id = self.conversation_scope(user_id, memory_input)
+        group_input = memory_input
+        if not use_memory:
+            recalled = await asyncio.to_thread(
+                self.group_memories.recall, memory_input["chat_id"], user_id, memory_input.get("text", ""),
+            )
+            group_input = {**memory_input, "local_memory": recalled}
         # Debug traffic must not continue or create a server-side persisted cascade.
         convo_id = None if debug_mode else self.store.get_conversation_id(context_id)
 
@@ -358,6 +402,30 @@ class AntigravityClient:
             f"При ON запись файлов разрешена только внутри проекта {config.BASE_DIR}; "
             "переключать режим может только владелец командой /sandbox."
         )
+        if not use_memory:
+            runtime_context += (
+                "\n[Групповой mod: отдельная песочница, проект только для чтения; личная память и Bot API запрещены. "
+                "Архивный MCP разрешает поиск по всем сохранённым группам и каналам, но НЕ по личным перепискам. "
+                "Для общего поиска вызывай search или semantic_search без chat_id: сервер ищет сразу по всем группам/каналам "
+                "с принудительным public_only=true, исключая лички до ранжирования. Не перебирай чаты через list_chats. "
+                "chat_id < 0 нужен только для конкретной группы/канала; аналитика без scope.chat_id — текущая группа. "
+                "Для дайджеста начни с 2–3 тематических запросов limit=20 с since/until за нужный день, затем составь ответ "
+                "по найденному; не продолжай поиск ради ровно десяти пунктов. Выдача содержит полные тексты сообщений. "
+                "Не запускай Python/shell для разбора ответов MCP и не перечитывай одни и те же результаты. "
+                "Если результат сохранён AGY в файл, прочитай его один раз через read_file. "
+                "Не вызывай get_message повторно ради уже полученного текста; он нужен только для дополнительного контекста. "
+                "Не расширяй запрошенное «сегодня» на вчера ради наполнения списка. "
+                "Если фактов меньше десяти, дай меньше и честно укажи ограничения. Личные чаты запрещены. "
+                "На обычную просьбу назвать чаты сразу вызови collector_call(tool_name='list_chats', arguments={'limit':50}), "
+                "покажи одну страницу и наличие продолжения. Не собирай все страницы, схемы и статистику каждого чата без просьбы. "
+                "Список архива не доказывает, что все эти чаты парсятся прямо сейчас. "
+                "У участников есть отдельная постоянная SQLite-память текущей группы, включая фоновое саммари. "
+                "Для долгосрочных деталей вызывай collector_call(tool_name='group_memory_search', "
+                "arguments={'user_id': <нужный участник>, 'query': <слова>}); пустой query возвращает саммари. "
+                "Она не содержит личных переписок и не меняет личную память владельца. "
+                "Ты сама выбираешь обычное сообщение или реплай: <tg-reply/> только когда нужен реплай. "
+                "Можно использовать известные @username участников, не выдумывай их.]"
+            )
 
         memory_context = ""
         event_key = None
@@ -424,10 +492,8 @@ class AntigravityClient:
                             block for block in (emotional_context, adaptive_context, runtime_context)
                             if block
                         ),
-                        tool_context={
-                            "requester_id": str(user_id),
-                            "chat_id": str(memory_input.get("chat_id", user_id) if memory_input else user_id),
-                        },
+                        tool_context=tools_context,
+                        group_input=group_input if not use_memory else None,
                     ):
                         emitted = True
                         reply.append(token)

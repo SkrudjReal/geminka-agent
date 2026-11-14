@@ -62,7 +62,7 @@ async def test_three_messages_produce_one_updated_reply_and_no_stale_archive(tmp
         return SimpleNamespace(
             from_user=SimpleNamespace(id=1, first_name="User"),
             chat=SimpleNamespace(id=1, type="private"), message_thread_id=None,
-            message_id=index, text=text, answer=AsyncMock(),
+            message_id=index, text=text, caption=None, voice=None, reply_to_message=None, answer=AsyncMock(),
         )
 
     messages = [message(1, "first"), message(2, "second"), message(3, "third")]

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -45,16 +46,30 @@ def sandbox_command(command: list[str], project_dir: Path, *, read_only: bool = 
 def agy_sandbox_command(
     command: list[str], project_dir: Path, *, restricted: bool = True, read_only: bool = False,
     tools_enabled: bool = True,
+    group_id: int | None = None,
 ) -> list[str]:
     """Use a clean CLI home, retaining each project's existing conversation storage."""
+    if group_id is not None:
+        if group_id >= 0:
+            raise SandboxError("Групповой mod требует отрицательный chat_id.")
+        restricted, read_only = True, True
     wrapped = sandbox_command(command, project_dir, read_only=read_only)
+    if group_id is not None:
+        # Start from an empty root, not a read-only view of the owner's whole machine.
+        wrapped = [wrapped[0], "--die-with-parent", "--new-session", "--unshare-pid",
+                   "--unshare-ipc", "--unshare-uts", "--cap-drop", "ALL"]
+        for system_dir in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
+            if Path(system_dir).exists():
+                wrapped.extend(["--ro-bind", system_dir, system_dir])
+        wrapped.extend(["--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev",
+                        "--chdir", str(project_dir.resolve()), "--", str(Path(command[0]).resolve()), *command[1:]])
     if not restricted:
         # Keep project-specific AGY state without imposing host write restrictions.
         wrapped[wrapped.index("--ro-bind")] = "--bind"
     source = Path.home() / ".gemini" / "antigravity-cli"
     if not source.is_dir():
         raise SandboxError("Сначала установи и авторизуй agy CLI: его runtime-папка не найдена.")
-    runtime = project_dir.resolve() / "data" / "agy_sandbox"
+    runtime = project_dir.resolve() / "data" / ("agy_sandbox" if group_id is None else f"agy_groups/{abs(group_id)}")
     runtime.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not runtime.resolve().is_relative_to(project_dir.resolve()):
         raise SandboxError("Runtime sandbox не может ссылаться за пределы проекта.")
@@ -68,7 +83,10 @@ def agy_sandbox_command(
         if src.is_file() and not dest.exists():
             dest.symlink_to(src)
     identity = hashlib.sha256(str(project_dir.resolve()).encode()).hexdigest()[:16]
-    home = Path.home() / ".geminka" / "instances" / (identity if tools_enabled else identity + "-summary")
+    profile = identity if tools_enabled else identity + "-summary"
+    if group_id is not None:
+        profile += f"-mod-{abs(group_id)}"
+    home = Path.home() / ".geminka" / "instances" / profile
     cli = home / ".gemini" / "antigravity-cli"
     config = home / ".gemini" / "config"
     workspace = home / "workspace"
@@ -84,6 +102,8 @@ def agy_sandbox_command(
         "permissions": {"allow": ["command(*)", "mcp(geminka-bot-api/*)"]},
         "trustedWorkspaces": [str(workspace), str(project_dir.resolve())],
     }))
+    # AGY validates settings with atomic rename; a file bind mount makes that fail.
+    _write_config(runtime / "settings.json", settings.read_text())
     uv = shutil.which("uv")
     if not uv:
         raise SandboxError("Для MCP Geminka требуется uv в PATH.")
@@ -97,10 +117,44 @@ def agy_sandbox_command(
     } if tools_enabled else {}
     _write_config(config / "mcp_config.json", json.dumps({"mcpServers": servers}))
     mounts = []
+    if group_id is not None:
+        # Reveal only application code, public catalogs, and this group's uploads.
+        mounts.extend(["--tmpfs", str(Path.home()), "--tmpfs", str(project_dir.resolve())])
+        for hidden in ("/mnt", "/media", "/run", "/root"):
+            if Path(hidden).is_dir():
+                mounts.extend(["--tmpfs", hidden])
+        dns = Path("/etc/resolv.conf").resolve()
+        if dns.is_file():
+            mounts.extend(["--ro-bind", str(dns), str(dns)])
+        for name in ("app", "agent_skills", ".venv", "PERSONA.md", "pyproject.toml", "uv.lock"):
+            path = project_dir.resolve() / name
+            if path.exists():
+                mounts.extend(["--ro-bind", str(path), str(path)])
+        for name in ("default_emojis.json", "default_stickers.json"):
+            path = project_dir.resolve() / "data" / name
+            if path.is_file():
+                mounts.extend(["--ro-bind", str(path), str(path)])
+        group_config = home / "mod-topics.json"
+        _write_config(group_config, json.dumps({"chats": {str(group_id): {"chat_id": group_id}}}))
+        mounts.extend(["--ro-bind", str(group_config), str(project_dir.resolve() / "data/active_topics.json")])
+        uploads = project_dir.resolve() / "downloads" / "attachments" / str(group_id)
+        uploads.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if uploads.resolve() != uploads:
+            raise SandboxError("Групповые вложения не могут быть символической ссылкой.")
+        mounts.extend(["--ro-bind", str(uploads), str(uploads)])
+        paths = [Path.home() / ".local/share/uv", Path(command[0]).resolve(), Path(uv).resolve()]
+        python_home = Path(sys.base_prefix).resolve()
+        if python_home not in {Path("/"), Path.home().resolve()}:
+            paths.append(python_home)
+        for path in paths:
+            if path.exists():
+                mounts.extend(["--ro-bind", str(path), str(path)])
+        binary = Path(uv)
+        if binary.is_symlink():
+            mounts.extend(["--symlink", str(binary.resolve()), str(binary)])
     mounts.extend([
         "--bind", str(home), str(home),
         "--bind", str(runtime), str(cli),
-        "--ro-bind", str(settings), str(cli / "settings.json"),
         "--bind", str(home / "mcp"), str(cli / "mcp"),
         "--ro-bind", str(home / "empty-builtin"), str(cli / "builtin"),
         "--ro-bind", str(home / "empty-builtin"), str(cli / "plugin_data"),
@@ -118,16 +172,19 @@ def agy_sandbox_command(
             mounts.extend(["--ro-bind", str(original), str(original)])
     wrapped[wrapped.index("--chdir") + 1] = str(workspace)
     # The installed agent executable is shared, but bundled skills/plugins aren't.
-    for name in ("bin",):
-        if (source / name).is_dir():
-            mounts.extend(["--ro-bind", str(source / name), str(cli / name)])
+    (cli / "bin").mkdir(exist_ok=True, mode=0o700)
+    if (source / "bin").is_dir():
+        for executable in (source / "bin").iterdir():
+            # AGY generates agentapi per runtime when launching terminal tools.
+            if executable.name != "agentapi":
+                mounts.extend(["--ro-bind", str(executable), str(cli / "bin" / executable.name)])
     # --add-dir may discover repository instructions: hide them only in this process.
-    for name in ("AGENTS.md", "GEMINI.md", "CLAUDE.md"):
+    for name in (() if group_id is not None else ("AGENTS.md", "GEMINI.md", "CLAUDE.md")):
         path = project_dir / name
         if path.is_file():
             mounts.extend(["--ro-bind", str(empty), str(path)])
     # Prevent tool calls from rewriting the owner's policy or credentials.
-    for path in ((project_dir / ".env", project_dir / "data" / "state.db") if restricted else ()):
+    for path in ((project_dir / ".env", project_dir / "data" / "state.db") if restricted and group_id is None else ()):
         for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
             if candidate.is_file():
                 mounts.extend(["--ro-bind", str(candidate), str(candidate)])

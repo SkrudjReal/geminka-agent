@@ -19,10 +19,11 @@ from mcp.types import ToolAnnotations
 
 logger = logging.getLogger(__name__)
 ALLOWED_TOOLS = frozenset({
-    "search_messages", "semantic_search", "list_users", "list_chats", "get_message",
+    "search", "search_messages", "semantic_search", "list_users", "list_chats", "get_message",
     "get_user_history", "get_message_metrics", "archive_status", "get_statistics", "get_activity",
     "get_top_words", "get_top_phrases", "get_top_mentions", "get_top_authors", "get_top_posts",
     "get_reply_partners", "get_message_history", "compare_periods", "get_archive_coverage",
+    "group_memory_search",
 })
 
 
@@ -30,13 +31,23 @@ ALLOWED_TOOLS = frozenset({
 class CollectorConfig:
     url: str
     token: str = field(repr=False)
+    group_proxy: bool = False
+    host_header: str = ""
 
 
 def collector_config() -> CollectorConfig | None:
+    if os.getenv("GEMINKA_GROUP_MODE") == "1":
+        url = os.getenv("GEMINKA_GROUP_BROKER_URL", "")
+        token = os.getenv("GEMINKA_GROUP_BROKER_TOKEN", "")
+        parsed = urlsplit(url)
+        if parsed.scheme == "http" and parsed.hostname == "127.0.0.1" and token:
+            return CollectorConfig(url, token, group_proxy=True)
+        return None
     if os.getenv("TG_COLLECTOR_MCP_ENABLED", "false").strip().lower() not in {"1", "true", "yes", "on"}:
         return None
     url = os.getenv("TG_COLLECTOR_MCP_URL", "").strip()
     token = os.getenv("TG_COLLECTOR_MCP_TOKEN", "").strip()
+    host_header = os.getenv("TG_COLLECTOR_MCP_HOST", "").strip()
     try:
         parsed = urlsplit(url)
         local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
@@ -45,19 +56,33 @@ def collector_config() -> CollectorConfig | None:
                 or any(c in token for c in "\r\n")):
             return None
         _ = parsed.port  # Validate a malformed port without exposing credentials in an error.
+        if host_header:
+            origin = urlsplit("http://" + host_header)
+            if (not local_http or origin.hostname not in {"127.0.0.1", "localhost", "::1"}
+                    or origin.port is None or origin.username or origin.password
+                    or origin.path or origin.query or origin.fragment
+                    or any(c in host_header for c in "\r\n")):
+                return None
     except ValueError:
         return None
-    return CollectorConfig(url, token)
+    return CollectorConfig(url, token, host_header=host_header)
 
 
 async def _request(config: CollectorConfig, tool_name: str | None, arguments: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(
-        headers={"Authorization": "Bearer " + config.token},
+        headers={"Authorization": "Bearer " + config.token,
+                 **({"Host": config.host_header} if config.host_header else {})},
         timeout=httpx.Timeout(30, connect=5), follow_redirects=False,
     ) as http:
         async with streamable_http_client(config.url, http_client=http) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
+                if config.group_proxy:
+                    result = await session.call_tool(
+                        "collector_tools" if tool_name is None else "collector_call",
+                        {} if tool_name is None else {"tool_name": tool_name, "arguments": arguments},
+                    )
+                    return result.structuredContent or json.loads(result.content[0].text)
                 discovered = (await session.list_tools()).tools
                 tools = {t.name: t for t in discovered if t.name in ALLOWED_TOOLS
                          and t.annotations and t.annotations.readOnlyHint is True}
@@ -80,7 +105,7 @@ def register_collector(mcp: FastMCP, authorized: Callable[[], bool]) -> None:
 
     async def invoke(tool_name: str | None, arguments: dict[str, Any]) -> dict[str, Any]:
         if not authorized():
-            return {"ok": False, "error": "Архив доступен только владельцу в личном чате."}
+            return {"ok": False, "error": "Архив доступен владельцу в личке или в разрешённой групповой песочнице."}
         configured = collector_config()
         if configured is None:
             return {"ok": False, "error": "Telegram Collector MCP отключён или не настроен."}
@@ -99,7 +124,7 @@ def register_collector(mcp: FastMCP, authorized: Callable[[], bool]) -> None:
 
     @mcp.tool(annotations=annotations)
     async def collector_tools() -> dict[str, Any]:
-        """Список read-only инструментов Telegram-архива с описаниями и схемами. Необязательный MCP, только владелец."""
+        """Read-only инструменты архива. В группе доступны группы/каналы, но не личные переписки."""
         return await invoke(None, {})
 
     @mcp.tool(annotations=annotations)

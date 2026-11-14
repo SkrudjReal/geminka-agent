@@ -34,7 +34,7 @@ async def test_middleware_silently_drops_unconfigured_group_message(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_middleware_passes_only_active_group_topic_for_allowed_user(monkeypatch) -> None:
+async def test_middleware_passes_active_group_topic_for_any_human(monkeypatch) -> None:
     middleware = OwnerAuthMiddleware()
     event = _group_message(5)
     allowed_user = types.User.model_construct(id=1224362805, is_bot=False, first_name="Owner")
@@ -53,9 +53,11 @@ async def test_middleware_passes_only_active_group_topic_for_allowed_user(monkey
     )
 
     # 1. Allowed user -> handled
+    event = event.model_copy(update={"from_user": allowed_user})
     result_allowed = await middleware(handler, event, {"event_from_user": allowed_user})
     assert result_allowed == "handled"
 
-    # 2. Unauthorized user -> blocked (None)
+    # Public group conversation does not grant private-chat or settings permissions.
+    event = event.model_copy(update={"from_user": unauthorized_user})
     result_unauthorized = await middleware(handler, event, {"event_from_user": unauthorized_user})
-    assert result_unauthorized is None
+    assert result_unauthorized == "handled"

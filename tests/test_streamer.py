@@ -15,6 +15,7 @@ async def test_sticker_ids_are_resolved_and_cached_per_bot(monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(streamer, "_LIVE_STICKER_IDS", {})
+    monkeypatch.setattr(streamer, "get_bot_stickers", lambda: [])
     monkeypatch.setattr(streamer.asset_harvester, "get_sticker_metadata", lambda fid: {
         "file_unique_id": "stable", "set_name": "Pack",
     })
@@ -60,7 +61,10 @@ class _FakeBot:
 
     async def send_message(self, *args, **kwargs):
         self.calls.append(kwargs)
-        return _SentMessage()
+        from aiogram.types import Chat, Message
+
+        return Message(message_id=100, date=0, chat=Chat(id=args[0], type="supergroup"),
+                       text=args[1], message_thread_id=kwargs.get("message_thread_id"))
 
 
 class _FileBot(_FakeBot):

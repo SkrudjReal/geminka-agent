@@ -33,6 +33,33 @@ async def test_success_without_any_response_is_not_silent_or_retryable():
     assert not error.value.retryable
 
 
+async def test_failed_result_does_not_expose_private_response_in_error():
+    from app.services.agy_cli import AgyCliError
+
+    reader = asyncio.StreamReader()
+    reader.feed_data((json.dumps({"event": "result", "result": {
+        "status": "ERROR", "response": "PRIVATE TRANSCRIPT",
+    }}) + "\n").encode())
+    session = _Session(SimpleNamespace(stdin=object(), stdout=reader), "gemini", "high", asyncio.Lock())
+    with pytest.raises(AgyCliError) as error:
+        _ = [part async for part in AgyCliClient()._send(session, None)]
+    assert "PRIVATE TRANSCRIPT" not in str(error.value)
+
+
+@pytest.mark.parametrize('reason', ['{"code":503}', 'UNAVAILABLE (code 503)',
+                                   'The service is currently unavailable'])
+async def test_failed_capacity_result_keeps_safe_reason(reason):
+    from app.services.agy_cli import AgyCliError
+
+    reader = asyncio.StreamReader()
+    reader.feed_data((json.dumps({'event': 'result', 'result': {
+        'status': 'ERROR', 'response': 'PRIVATE TRANSCRIPT ' + reason}}) + '\n').encode())
+    session = _Session(SimpleNamespace(stdin=object(), stdout=reader), 'gemini', 'low', asyncio.Lock())
+    with pytest.raises(AgyCliError, match='нет свободной capacity') as error:
+        _ = [part async for part in AgyCliClient()._send(session, None)]
+    assert 'PRIVATE' not in str(error.value)
+
+
 @pytest.mark.asyncio
 async def test_live_session_bootstrap_updates_and_fresh_memory(monkeypatch):
     client = AgyCliClient()
@@ -71,3 +98,53 @@ async def test_live_session_bootstrap_updates_and_fresh_memory(monkeypatch):
     session = _Session(SimpleNamespace(returncode=None), "gemini", "low", asyncio.Lock())
     await turn("MEMORY FOUR")
     assert "UPDATED PERSONA" in sent[3] and "OLD HISTORY" in sent[3]
+
+
+async def test_group_context_cursor_committed_only_after_success_and_reset_with_session(monkeypatch):
+    from app.services.agy_cli import AgyCliError
+
+    client = AgyCliClient()
+    client._catalog = ["gemini"]
+    session = _Session(SimpleNamespace(returncode=None), "gemini", "low", asyncio.Lock())
+    seen = []
+    fail = [False]
+
+    async def get_session(*args):
+        return session
+
+    async def build(*args, state):
+        seen.append(dict(state))
+        state["cursor"] = args[2]
+        return "GROUP DELTA"
+
+    async def send(session, prompt):
+        assert "GROUP DELTA" in prompt
+        if fail[0]:
+            raise AgyCliError("failed")
+        yield "ok"
+
+    async def close(session):
+        pass
+
+    monkeypatch.setattr(client, "_get_session", get_session)
+    monkeypatch.setattr(client, "_send", send)
+    monkeypatch.setattr(client, "_close_session", close)
+    monkeypatch.setattr("app.services.group_context.build_context", build)
+    async def turn(mid):
+        return [part async for part in client.stream(
+            -1, model="gemini", effort="low",
+            messages=[{"role": "system", "content": "persona"}, {"role": "user", "content": "hi"}],
+            tool_context={"requester_id": "42"},
+            group_input={"chat_id": -1001, "message_id": mid},
+        )]
+
+    await turn(10)
+    assert session.group_context_state == {"cursor": 10}
+    fail[0] = True
+    with pytest.raises(AgyCliError):
+        await turn(20)
+    assert session.group_context_state == {"cursor": 10}
+    session = _Session(SimpleNamespace(returncode=None), "gemini", "low", asyncio.Lock())
+    fail[0] = False
+    await turn(30)
+    assert seen == [{}, {"cursor": 10}, {}]

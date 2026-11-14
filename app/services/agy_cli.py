@@ -85,6 +85,7 @@ class _Session:
     stderr_task: asyncio.Task[None] | None = None
     tool_context: tuple[tuple[str, str], ...] = ()
     sandbox_enabled: bool = True
+    group_context_state: dict | None = None
 
 
 class AgyCliClient:
@@ -124,13 +125,15 @@ class AgyCliClient:
             self.sandbox_enabled = enabled
             await self._close_all()
 
-    def _sandbox_command(self, args: list[str], *, read_only: bool = False, tools_enabled: bool = True) -> list[str]:
+    def _sandbox_command(self, args: list[str], *, read_only: bool = False, tools_enabled: bool = True,
+                         group_id: int | None = None) -> list[str]:
         try:
             if not self.sandbox_enabled and not read_only:
                 return agy_sandbox_command([self.command, *args], self.project_dir, restricted=False)
             return agy_sandbox_command(
                 [self.command, "--sandbox", *args], self.project_dir, read_only=read_only,
                 **({"tools_enabled": False} if not tools_enabled else {}),
+                **({"group_id": group_id} if group_id is not None else {}),
             )
         except (SandboxError, OSError) as exc:
             raise AgyCliError(str(exc)) from exc
@@ -139,13 +142,15 @@ class AgyCliClient:
         self, model: str, effort: str, tool_context: Mapping[str, str] | None = None,
     ) -> list[str]:
         requester = (tool_context or {}).get("requester_id")
-        read_only = requester is not None and requester != str(config.settings.owner_user_id)
+        chat = (tool_context or {}).get("chat_id", "")
+        group_id = int(chat) if chat.startswith("-") and chat[1:].isdigit() else None
+        read_only = group_id is not None or (requester is not None and requester != str(config.settings.owner_user_id))
         return self._sandbox_command([
             "--print=", "--input-format", "stream-json", "--output-format", "stream-json",
             "--model", model, "--effort", effort, "--mode", "plan" if read_only else "accept-edits",
             "--add-dir", str(self.project_dir), "--disable-slash-commands",
             "--print-timeout", f"{self.timeout_seconds}s",
-        ], read_only=read_only, tools_enabled=requester != "summary")
+        ], read_only=read_only, tools_enabled=requester != "summary", group_id=group_id)
 
     def reset_user(self, user_id: int) -> None:
         session = self._sessions.pop(user_id, None)
@@ -207,6 +212,7 @@ class AgyCliClient:
         debug: bool = False,
         turn_context: str = "",
         tool_context: Mapping[str, str] | None = None,
+        group_input: dict | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield response deltas from one direct CLI turn."""
         if not self._catalog:
@@ -221,7 +227,22 @@ class AgyCliClient:
             )
         full_messages = [*messages[:-1], current]
         tool_context = tool_context or {}
+        async def with_group_context(state):
+            from app.services.group_context import build_context
+
+            extra = await build_context(
+                group_input["chat_id"], group_input.get("thread_id"),
+                group_input["message_id"], int(tool_context["requester_id"]),
+                group_input.get("date"), state=state,
+            )
+            from app.services.group_memory import memory_delta
+
+            extra += memory_delta(group_input.get("local_memory", {}), state)
+            return {**current, "content": extra + "\n" + current["content"]}
+
         if debug:
+            if group_input:
+                full_messages = [*messages[:-1], await with_group_context({})]
             async for token in self._stream_once(
                 cli_model, effort, format_messages(full_messages), tool_context
             ):
@@ -230,6 +251,10 @@ class AgyCliClient:
 
         session = await self._get_session(user_id, cli_model, effort, tool_context)
         async with session.lock:
+            next_group_state = dict(session.group_context_state or {})
+            if group_input:
+                current = await with_group_context(next_group_state)
+                full_messages = [*messages[:-1], current]
             instructions = messages[0]["content"]
             if not session.started:
                 outgoing = full_messages
@@ -252,6 +277,7 @@ class AgyCliClient:
                     yield token
                 session.started = True
                 session.instructions = instructions
+                session.group_context_state = next_group_state
                 logger.info("agy completed_ms=%.0f", (time.monotonic() - turn_started) * 1000)
             except asyncio.CancelledError:
                 if self._sessions.get(user_id) is session:
@@ -355,13 +381,23 @@ class AgyCliClient:
             sorted(
                 (str(key), str(value))
                 for key, value in (tool_context or {}).items()
-                if key in {"requester_id", "chat_id"}
+                if key in {"requester_id", "chat_id", "group_broker_url"}
             )
         )
 
     @classmethod
     def _tool_env(cls, tool_context: Mapping[str, str] | None) -> dict[str, str]:
         env = os.environ.copy()
+        chat = (tool_context or {}).get("chat_id", "")
+        if chat.startswith("-") and chat[1:].isdigit():
+            safe = {"PATH", "LANG", "LC_ALL", "TZ", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR"}
+            env = {key: value for key, value in env.items() if key in safe}
+            env["GEMINKA_GROUP_MODE"] = "1"
+            if config.settings.owner_user_id is not None:
+                env["TELEGRAM_OWNER_ID"] = str(config.settings.owner_user_id)
+            for key in ("group_broker_url", "group_broker_token"):
+                if value := (tool_context or {}).get(key):
+                    env[f"GEMINKA_{key.upper()}"] = value
         for key, value in cls._tool_context_signature(tool_context):
             env[f"GEMINKA_{key.upper()}"] = value
         return env
@@ -402,7 +438,14 @@ class AgyCliClient:
 
             result = event.get("result", {})
             if str(result.get("status", "")).casefold() != "success":
-                raise self._error_from_text(json.dumps(result, ensure_ascii=False))
+                error = self._error_from_text(json.dumps(result, ensure_ascii=False))
+                # Provider errors may contain an entire private transcript in response.
+                if "response" in result:
+                    if not str(error).startswith("Модель временно недоступна:"):
+                        error.args = ("AGY завершил генерацию со статусом ERROR; текст ответа скрыт из логов.",)
+                logger.warning("agy failed_result streamed=%s category=%s", received_text,
+                               "capacity" if str(error).startswith("Модель временно недоступна:") else "unknown")
+                raise error
             # Some CLI turns return only the final response, without text deltas.
             # Never replay the full response after an already streamed answer.
             response = result.get("response")
@@ -440,7 +483,9 @@ class AgyCliClient:
 
     @staticmethod
     def _error_from_text(text: str) -> AgyCliError:
-        lowered = text.casefold()
-        if "model_capacity_exhausted" in lowered or "no capacity available" in lowered or "code 503" in lowered:
+        lowered = text.casefold().replace("\\", "")
+        if ("model_capacity_exhausted" in lowered or "no capacity available" in lowered
+                or re.search(r'\bcode[\s"\x27:=(]*503\b', lowered)
+                or "the service is currently unavailable" in lowered):
             return AgyCliError("Модель временно недоступна: нет свободной capacity.")
         return AgyCliError(text.strip()[:500] or "agy CLI завершился с ошибкой")

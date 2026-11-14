@@ -66,6 +66,10 @@ async def call_bot_api(
         raise BotApiCallError(f"Публичный метод aiogram не найден: {method!r}")
 
     call_params = _normalize_json_strings(dict(params or {}))
+    if method == "send_sticker" and isinstance(call_params.get("sticker"), str):
+        from app.services.sticker_policy import check_delivery
+
+        await check_delivery(bot, call_params["sticker"])
     if default_chat_id is not None and "chat_id" in inspect.signature(function).parameters:
         call_params.setdefault("chat_id", default_chat_id)
 

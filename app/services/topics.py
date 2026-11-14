@@ -19,6 +19,8 @@ from app.core.files import atomic_write_json, load_json
 logger = logging.getLogger("geminka-topics")
 
 TOPICS_FILE = config.DATA_DIR / "active_topics.json"
+DEFAULT_PREFIXES = ["геминка", "клумба", "коломбина", "колумбина", "коломбинка", "колумбинка"]
+DECLINABLE_PREFIXES = set(DEFAULT_PREFIXES)
 
 
 class TopicManager:
@@ -26,7 +28,7 @@ class TopicManager:
         self.storage_file = storage_file
         self.data: Dict[str, Any] = {
             "chats": {},
-            "prefixes": ["коломбина", "клумба"],
+            "prefixes": list(DEFAULT_PREFIXES),
             "topics": {}  # "chat_id:topic_id" -> {chat_id, topic_id, chat_title, added_by, created_at}
         }
         self.load()
@@ -38,7 +40,12 @@ class TopicManager:
                 if "topics" in saved:
                     self.data["topics"] = saved["topics"]
                 self.data["chats"] = saved.get("chats", {})
-                self.data["prefixes"] = saved.get("prefixes", ["коломбина", "клумба"])
+                prefixes = saved.get("prefixes", DEFAULT_PREFIXES)
+                # Upgrade the old defaults without replacing an owner's custom names.
+                old_defaults = (["коломбина", "клумба"],
+                                ["геминка", "клумба", "коломбина", "колумбина"],
+                                ["коломбина", "клумба", "геминка", "гемини", "гемка", "гем", "колумбина"])
+                self.data["prefixes"] = list(DEFAULT_PREFIXES if prefixes in old_defaults else prefixes)
                 logger.info(f"TopicManager loaded {len(self.data['topics'])} active topics.")
             except Exception as e:
                 logger.warning(f"Failed to load topics: {e}")
@@ -156,6 +163,14 @@ class TopicManager:
     def is_chat_active(self, chat_id: int) -> bool:
         return str(chat_id) in self.data["chats"]
 
+    def is_group_configured(self, chat_id: int) -> bool:
+        return self.is_chat_active(chat_id) or any(t["chat_id"] == chat_id for t in self.get_active_topics())
+
+    def should_answer(self, chat_id: int, topic_id: int | None, text: str, *, reply_to_bot: bool = False) -> bool:
+        return self.is_topic_active(chat_id, topic_id) or (
+            self.is_chat_active(chat_id) and (reply_to_bot or self.strip_prefix(text) is not None)
+        )
+
     def get_active_chats(self) -> List[Dict[str, Any]]:
         return list(self.data["chats"].values())
 
@@ -168,11 +183,19 @@ class TopicManager:
         self._update("prefixes", normalized)
 
     def strip_prefix(self, text: str) -> str | None:
-        alternatives = "|".join(re.escape(p) for p in sorted(self.data["prefixes"], key=len, reverse=True))
-        matched = re.match(
-            rf"^(?:{alternatives})(?=$|[\s,:!?.—-])[\s,:!?.—-]*", text.strip(), re.IGNORECASE,
+        forms = set(self.data["prefixes"])
+        for prefix in forms.copy():
+            if prefix in DECLINABLE_PREFIXES:
+                genitive = "и" if prefix[-2] == "к" else "ы"
+                forms.update(prefix[:-1] + ending for ending in (genitive, "е", "у", "ой", "ою"))
+        alternatives = "|".join(re.escape(p) for p in sorted(forms, key=len, reverse=True))
+        matched = re.search(
+            rf"(?<!\w)(?:{alternatives})(?!\w)[\s,:!?.—-]*", text.strip(), re.IGNORECASE,
         )
-        return text.strip()[matched.end():] if matched else None
+        if matched is None:
+            return None
+        # Keep a name inside the sentence so emotion/intent analysis retains its meaning.
+        return text.strip()[matched.end():] if matched.start() == 0 else text.strip()
 
 
 topic_manager = TopicManager()

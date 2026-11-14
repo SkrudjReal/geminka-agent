@@ -21,9 +21,22 @@ class Registry:
 
 @pytest.fixture
 def enabled(monkeypatch):
+    monkeypatch.delenv("TG_COLLECTOR_MCP_HOST", raising=False)
     monkeypatch.setenv("TG_COLLECTOR_MCP_ENABLED", "true")
     monkeypatch.setenv("TG_COLLECTOR_MCP_URL", "https://collector.example/mcp")
     monkeypatch.setenv("TG_COLLECTOR_MCP_TOKEN", "private-test-token")
+
+
+def test_ssh_tunnel_host_override_is_only_for_loopback(enabled, monkeypatch):
+    monkeypatch.setenv("TG_COLLECTOR_MCP_URL", "http://127.0.0.1:18765/mcp")
+    monkeypatch.setenv("TG_COLLECTOR_MCP_HOST", "127.0.0.1:8765")
+    assert collector_mcp.collector_config().host_header == "127.0.0.1:8765"
+    for host in ("public.example:8765", "127.0.0.1:8765/path", "127.0.0.1:8765\r\nBad: value"):
+        monkeypatch.setenv("TG_COLLECTOR_MCP_HOST", host)
+        assert collector_mcp.collector_config() is None
+    monkeypatch.setenv("TG_COLLECTOR_MCP_HOST", "127.0.0.1:8765")
+    monkeypatch.setenv("TG_COLLECTOR_MCP_URL", "https://remote.example/mcp")
+    assert collector_mcp.collector_config() is None
 
 
 def test_disabled_or_incomplete_configuration_does_not_require_remote(monkeypatch):
@@ -98,6 +111,8 @@ async def test_read_only_discovery_and_result_with_authenticated_transport(enabl
 
         async def list_tools(self):
             return SimpleNamespace(tools=[
+                Tool(name="search", description="Hybrid search", inputSchema={"type": "object"},
+                     annotations=ToolAnnotations(readOnlyHint=True)),
                 Tool(name="search_messages", description="Search", inputSchema={"type": "object"},
                      annotations=ToolAnnotations(readOnlyHint=True)),
                 Tool(name="get_user_history", inputSchema={}, annotations=ToolAnnotations(readOnlyHint=False)),
@@ -112,13 +127,16 @@ async def test_read_only_discovery_and_result_with_authenticated_transport(enabl
     monkeypatch.setattr(collector_mcp, "ClientSession", Session)
     cfg = collector_mcp.collector_config()
     found = await collector_mcp._request(cfg, None, {})
-    assert found["tool_count"] == 1
-    assert [t["name"] for t in found["tools"]] == ["search_messages"]
+    assert found["tool_count"] == 2
+    assert [t["name"] for t in found["tools"]] == ["search", "search_messages"]
+    result = await collector_mcp._request(cfg, "search", {"query": "воспоминание", "limit": 1})
+    assert result["ok"]
     result = await collector_mcp._request(cfg, "search_messages", {"limit": 1})
     assert result["ok"]
-    assert calls == [("search_messages", {"limit": 1})]
+    assert calls == [("search", {"query": "воспоминание", "limit": 1}),
+                     ("search_messages", {"limit": 1})]
     assert not (await collector_mcp._request(cfg, "get_user_history", {}))["ok"]
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("requester,chat,allowed", [("42", "42", True), ("42", "-100123", False),

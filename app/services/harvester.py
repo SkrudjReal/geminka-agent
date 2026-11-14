@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core import config
 from app.core.files import atomic_write_json, load_json
 from app.core.state import state_store
+from app.services.sticker_policy import allowed
 
 logger = logging.getLogger("geminka-assets")
 
@@ -272,9 +273,10 @@ class AssetHarvester:
         """Returns the user's stickers plus the built-in Columbina catalog."""
         self._refresh_if_changed()
         uid_str = str(user_id)
+        packs = set(self.data.get("user_preferences", {}).get(uid_str, {}).get("favorite_packs", []))
         u_stickers = []
         for item in self.data["stickers"].values():
-            if uid_str in item.get("users", []):
+            if uid_str in item.get("users", []) or item.get("set_name") in packs:
                 u_stickers.append(item)
 
         default_stickers = load_json(config.DEFAULT_STICKERS_FILE, [])
@@ -542,6 +544,7 @@ class AssetHarvester:
             return None
 
         # 1. If pack specified, score within requested pack first
+        stickers = [sticker for sticker in stickers if allowed(sticker)]
         scored_stickers: List[Tuple[float, Dict[str, Any]]] = []
         if pack:
             pack_stickers = [s for s in stickers if pack.lower() in s.get("set_name", "").lower()]
@@ -561,6 +564,8 @@ class AssetHarvester:
         if not scored_stickers and (tag or emoji or pack):
             all_stickers = list(self.data.get("stickers", {}).values())
             for s in all_stickers:
+                if not allowed(s):
+                    continue
                 sc = self.calculate_sticker_score(s, tag=tag, emoji=emoji, pack=pack)
                 if sc > 0:
                     scored_stickers.append((sc, s))

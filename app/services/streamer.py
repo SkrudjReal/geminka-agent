@@ -6,7 +6,7 @@ Inspired by Hermes Agent formatting & streaming architecture:
 - Native Sticker Selection by emotion tag, description, emoji or index (<tg-sticker tag="..." />)
 - Native Message Reactions (<tg-react emoji="❤" /> or <tg-react custom-emoji-id="..." />)
 - Conditional Context-Aware Quote Replies (<tg-reply />)
-- Dual Photo delivery with spoiler reply (<tg-send-photos />)
+- Pinterest cosplay photo delivery (<tg-send-photos query="..." />)
 - Local document delivery (<tg-file path="..." caption="..." />)
 - Progressive message edits with adaptive debounce (0.8s)
 - Animated streaming cursor (▉) during generation это пиздёж
@@ -51,7 +51,7 @@ STICKER_TAG_RE = re.compile(r"<tg-sticker\s+([^>]+)\s*/?>", re.IGNORECASE)
 REACT_TAG_RE = re.compile(r"<tg-react\s+([^>]+)\s*/?>", re.IGNORECASE)
 REPLY_TAG_RE = re.compile(r"<tg-reply(?:\s*/>|\s+[^>]*/>)", re.IGNORECASE)
 RP_TAG_RE = re.compile(r"<tg-rp\s+([^>]+)\s*/?>", re.IGNORECASE)
-PHOTO_PAIR_TAG_RE = re.compile(r"<tg-send-photos\s*/?>|<tg-photo-pair\s*/?>", re.IGNORECASE)
+PHOTO_PAIR_TAG_RE = re.compile(r"<tg-send-photos\b([^>]*)>|<tg-photo-pair\s*/?>", re.IGNORECASE)
 CUSTOM_PHOTO_TAG_RE = re.compile(r"<tg-photo\s+([^>]+)\s*/?>", re.IGNORECASE)
 FILE_TAG_RE = re.compile(r"<tg-file\s+([^>]+)\s*/?>", re.IGNORECASE)
 GIF_TAG_RE = re.compile(r"<tg-gif\s+([^>]+)\s*/?>", re.IGNORECASE)
@@ -82,13 +82,6 @@ EMOJI_REACTION_MAP = {
     "🌟": "🔥",
     "🌸": "🥰",
 }
-
-SURPRISE_CAPTIONS = [
-    'А вот маленький сюрприз от меня <tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>',
-    'Специально для тебя... только никому не показывай <tg-emoji emoji-id="5305423313764363203">🤫</tg-emoji> <tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>',
-    'Вот ещё одна... в полный рост <tg-emoji emoji-id="5305602448260345544">☺️</tg-emoji> <tg-emoji emoji-id="5456184310895748720">✨</tg-emoji>',
-    'Маленький секретный кадр от Коломбины <tg-emoji emoji-id="5300994163100119559">🌸</tg-emoji> <tg-emoji emoji-id="6136716054971291812">💖</tg-emoji>',
-]
 
 # Dynamic bot-specific stickers catalog with emotion tags
 _STICKERS_CACHE: List[Dict] = []
@@ -191,11 +184,31 @@ def resolve_sticker_file_id(attrs_str: str, user_id: Optional[int] = None) -> Op
 _LIVE_STICKER_IDS: dict[tuple[int, str], tuple[float, dict[str, str]]] = {}
 
 
-async def current_sticker_file_id(bot: Bot, file_id: str) -> str:
+async def current_sticker_file_id(bot: Bot, file_id: str, user_id: int | None = None) -> str:
     """Portable catalogues store unique IDs; Telegram file IDs are bot-scoped."""
     item = asset_harvester.get_sticker_metadata(file_id)
     if not item:
         item = next((row for row in get_bot_stickers() if row.get("file_id") == file_id), None)
+    from app.services.sticker_policy import PREFERRED_PACK, check_delivery, pack_pool
+
+    await check_delivery(bot, file_id, item)
+    catalog = get_bot_stickers()
+    personal = []
+    if user_id is not None:
+        assets = asset_harvester.get_user_stickers(user_id)
+        packs = set(asset_harvester.data.get("user_preferences", {}).get(str(user_id), {}).get("favorite_packs", []))
+        personal = [row for row in assets if row.get("set_name") in packs]
+    pool = pack_pool(catalog, personal=personal) if (
+        personal or any(row.get("set_name") == PREFERRED_PACK for row in catalog)
+    ) else []
+    if pool:
+        scores = [(asset_harvester.calculate_sticker_score(
+            candidate, tag=" ".join((item or {}).get("tags", [])),
+            emoji=(item or {}).get("emoji"), pack=None,
+        ), candidate) for candidate in pool]
+        best = max(score for score, _ in scores)
+        item = random.choice([candidate for score, candidate in scores if score == best])
+        file_id = item["file_id"]
     if not item or not item.get("set_name") or not item.get("file_unique_id"):
         return file_id
     key = (bot.id, item["set_name"])
@@ -719,6 +732,14 @@ class TelegramStreamConsumer:
     def _format_html(self, text: str) -> str:
         return md_to_telegram_html(self._emoji_policy(text))
 
+    def _local_file(self, raw_path: str) -> Path | None:
+        path = resolve_local_file(raw_path)
+        if path is not None and self.chat_id < 0:
+            uploads = config.DOWNLOADS_DIR / "attachments" / str(self.chat_id) / str(self.user_id)
+            if not path.is_relative_to(uploads.resolve()):
+                return None
+        return path
+
     async def _consume_live_tokens(self, token_generator: AsyncGenerator[str, None]) -> None:
         try:
             async for chunk in token_generator:
@@ -734,6 +755,9 @@ class TelegramStreamConsumer:
                 self.accumulated += chunk
                 if REPLY_TAG_RE.search(self.accumulated):
                     self.should_reply = True
+                # A late reply tag cannot change an already-sent message's reply target.
+                if self.chat_id < 0:
+                    continue
                 clean_display = self._emoji_policy(strip_delivery_tags(strip_think_tags(self.accumulated)))
                 if not self.message_id:
                     if len(clean_display) >= 8 or "\n" in clean_display:
@@ -810,6 +834,7 @@ class TelegramStreamConsumer:
                         state_name=state_name,
                         delta=delta,
                         warmth=warmth,
+                        relationship=_tag_attr(mood_matches[-1].group(1), "relationship"),
                     )
 
         final_text = self._emoji_policy(strip_delivery_tags(final_raw))
@@ -830,7 +855,7 @@ class TelegramStreamConsumer:
             if not self.message_id:
                 html_text = self._format_html(chunks[0])
                 try:
-                    await self.bot.send_message(
+                    sent = await self.bot.send_message(
                         self.chat_id,
                         html_text,
                         parse_mode=ParseMode.HTML,
@@ -838,30 +863,38 @@ class TelegramStreamConsumer:
                         reply_parameters=reply_params,
                     )
                 except Exception:
-                    await self.bot.send_message(
+                    sent = await self.bot.send_message(
                         self.chat_id,
                         chunks[0],
                         parse_mode=None,
                         message_thread_id=self.message_thread_id,
                         reply_parameters=reply_params,
                     )
+                if self.chat_id < 0:
+                    from app.services.group_context import observe
+
+                    observe(sent)
             else:
                 await self._safe_edit(chunks[0], finalize=True)
             for chunk in chunks[1:]:
                 try:
-                    await self.bot.send_message(
+                    sent = await self.bot.send_message(
                         self.chat_id,
                         self._format_html(chunk),
                         parse_mode=ParseMode.HTML,
                         message_thread_id=self.message_thread_id,
                     )
                 except TelegramBadRequest:
-                    await self.bot.send_message(
+                    sent = await self.bot.send_message(
                         self.chat_id,
                         chunk,
                         parse_mode=None,
                         message_thread_id=self.message_thread_id,
                     )
+                if self.chat_id < 0:
+                    from app.services.group_context import observe
+
+                    observe(sent)
         elif self.message_id:
             try:
                 await self.bot.delete_message(self.chat_id, self.message_id)
@@ -888,34 +921,18 @@ class TelegramStreamConsumer:
 
         # Send Photo Pair Flow: 1. Main photo (with kuukhenki) -> 2. Spoiler photo (full body secret) as reply
         if send_photos:
-            photo1_path = config.BASE_DIR / "assets" / "columbina_with_kuukhenki.jpg"
-            photo2_path = config.BASE_DIR / "assets" / "columbina_secret.jpg"
+            from app.services.pinterest_self import send_self_photo
 
-            if photo1_path.exists():
-                try:
-                    caption1 = "Вот я и мой верный спутник куухенки ✨ 🌸"
-                    p1_msg = await self.bot.send_photo(
-                        chat_id=self.chat_id,
-                        photo=FSInputFile(str(photo1_path)),
-                        caption=caption1,
-                        message_thread_id=self.message_thread_id,
-                    )
-                    await asyncio.sleep(0.5)
-
-                    if photo2_path.exists():
-                        surprise_caption = random.choice(SURPRISE_CAPTIONS)
-                        html_caption = self._format_html(surprise_caption)
-                        await self.bot.send_photo(
-                            chat_id=self.chat_id,
-                            photo=FSInputFile(str(photo2_path)),
-                            caption=html_caption,
-                            parse_mode=ParseMode.HTML,
-                            has_spoiler=True,
-                            message_thread_id=self.message_thread_id,
-                            reply_parameters=ReplyParameters(message_id=p1_msg.message_id),
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to send photo pair: {e}")
+            match = PHOTO_PAIR_TAG_RE.search(final_raw)
+            query_match = re.search(r'query="([^"]+)"', match.group(1) or '')
+            try:
+                await send_self_photo(
+                    self.bot, self.chat_id, query=html.unescape(query_match.group(1)) if query_match else None,
+                    thread_id=self.message_thread_id, reply_to=self.target_message_id)
+            except Exception as exc:
+                logger.warning("Pinterest self photo failed (%s)", type(exc).__name__)
+                await self.bot.send_message(self.chat_id, 'Не удалось найти и отправить новую картинку с Pinterest. Попробуй позже.',
+                                            message_thread_id=self.message_thread_id)
 
         # Send custom photo(s) if <tg-photo path="..." caption="..."/> is present
         for m_photo in CUSTOM_PHOTO_TAG_RE.finditer(final_raw):
@@ -923,10 +940,8 @@ class TelegramStreamConsumer:
             m_path = re.search(r'path="([^"]+)"', p_attrs)
             if m_path:
                 raw_path_str = m_path.group(1).strip()
-                p_file = Path(raw_path_str)
-                if not p_file.is_absolute():
-                    p_file = config.BASE_DIR / p_file
-                if p_file.exists():
+                p_file = self._local_file(raw_path_str)
+                if p_file is not None:
                     m_cap = re.search(r'caption="([^"]+)"', p_attrs)
                     caption_val = m_cap.group(1).strip() if m_cap else None
                     html_cap = self._format_html(caption_val) if caption_val else None
@@ -949,7 +964,7 @@ class TelegramStreamConsumer:
                 logger.warning("Skipping <tg-file> without a path")
                 continue
 
-            file_path = resolve_local_file(raw_file_path)
+            file_path = self._local_file(raw_file_path)
             if not file_path:
                 continue
 
@@ -976,7 +991,7 @@ class TelegramStreamConsumer:
                 else None
             )
             try:
-                delivery_id = await current_sticker_file_id(self.bot, sticker_file_id)
+                delivery_id = await current_sticker_file_id(self.bot, sticker_file_id, self.user_id)
                 await self.bot.send_sticker(
                     self.chat_id,
                     delivery_id,

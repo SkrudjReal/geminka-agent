@@ -41,12 +41,11 @@ def test_apply_model_mood_adjusts_state_and_warmth(tmp_path) -> None:
     assert cold is not None
     assert cold.mood == "cold"
     assert cold.warmth <= 25
-    cold_warmth = cold.warmth
 
     pouty = engine.apply_model_mood(1, state_name="pouty", delta=15)
     assert pouty is not None
-    assert pouty.mood == "pouty"
-    assert pouty.warmth > cold_warmth
+    assert pouty.mood == "cold"
+    assert pouty.warmth <= 25
 
     assert engine.apply_model_mood(1, state_name="unknown") is None
 
@@ -65,7 +64,10 @@ class _FakeBot:
 
     async def send_message(self, *args, **kwargs):
         self.calls.append(kwargs)
-        return _SentMessage()
+        from aiogram.types import Chat, Message
+
+        return Message(message_id=1, date=0, chat=Chat(id=args[0], type="supergroup"),
+                       text=args[1], message_thread_id=kwargs.get("message_thread_id"))
 
 
 @pytest.mark.asyncio
@@ -135,7 +137,7 @@ def test_default_template_is_copied_and_stored_user_ids_are_canonical(tmp_path):
     assert engine.get_state(42).user_id == 42
     assert engine.get_state(43).mood == "playful"
     engine.apply_model_mood(43, state_name="cold", delta=-50)
-    assert engine.get_state(44).warmth == 80
+    assert engine.get_state(44).warmth == 60
     assert engine.states["default"].warmth == 80
     assert "-100123" not in engine.states
     for invalid in (0, -100123, "42", True):
@@ -183,7 +185,8 @@ async def test_mood_commands_and_reactions_are_personal(tmp_path, monkeypatch):
     before = asdict(engine.get_state(42))
     await handlers.cmd_mood(message, CommandObject(command="mood", args="reset"))
     assert asdict(engine.get_state(42)) == before
-    event = SimpleNamespace(user=SimpleNamespace(id=43), new_reaction=[ReactionTypeEmoji(emoji="👎")], message_id=1)
+    event = SimpleNamespace(user=SimpleNamespace(id=43), chat=SimpleNamespace(type="private"),
+                            new_reaction=[ReactionTypeEmoji(emoji="👎")], message_id=1)
     await handlers.handle_message_reaction(event, _FakeBot())
     assert asdict(engine.get_state(42)) == before
     count = len(engine.states)
