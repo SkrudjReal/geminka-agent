@@ -69,7 +69,7 @@ async def test_delivery_uses_only_interlocutor_packs(monkeypatch):
 def test_pack_probability(roll, preferred):
     pool = pack_pool([{"set_name": PREFERRED_PACK}, {"set_name": "original"}],
                      SimpleNamespace(random=lambda: roll))
-    assert (pool[0]["set_name"] == PREFERRED_PACK) is preferred
+    assert pool == [{"set_name": PREFERRED_PACK}, {"set_name": "original"}]
 
 
 @pytest.mark.parametrize("unique", list(BLOCKED_UNIQUE_IDS))
@@ -81,7 +81,7 @@ def test_blocked_ids_cannot_enter_pool(unique):
 
 @pytest.mark.parametrize("position", [3, 4, 5, 7, 8])
 def test_blocked_pack_positions(position):
-    assert not allowed({"set_name": PREFERRED_PACK, "pack_position": position})
+    assert allowed({"set_name": PREFERRED_PACK, "pack_position": position})
     assert allowed({"set_name": "original", "pack_position": position})
 
 
@@ -94,7 +94,7 @@ async def test_direct_unknown_file_id_is_checked_before_send():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("roll,expected", [(.79, "live-new"), (.8, "live-old")])
+@pytest.mark.parametrize("roll,expected", [(.79, "live-new"), (.8, "live-new")])
 async def test_delivery_applies_pack_weight_to_selected_sticker(monkeypatch, roll, expected):
     from app.services import sticker_policy, streamer
 
@@ -112,3 +112,19 @@ async def test_delivery_applies_pack_weight_to_selected_sticker(monkeypatch, rol
 
     bot = SimpleNamespace(id=1, get_sticker_set=get_set)
     assert await streamer.current_sticker_file_id(bot, "old") == expected
+
+
+def test_removed_pack_is_excluded_even_from_personal_pool():
+    item = {"set_name": "corny_columbina", "file_unique_id": "formerly-allowed"}
+    assert not allowed(item)
+    assert pack_pool([], personal=[item]) == []
+
+
+def test_only_requested_default_pack_remains():
+    import json
+
+    from app.core import config
+
+    items = json.loads(config.DEFAULT_STICKERS_FILE.read_text())
+    assert len(items) == 81
+    assert {item['set_name'] for item in items} == {PREFERRED_PACK}

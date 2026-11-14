@@ -15,7 +15,7 @@ logger = logging.getLogger("geminka-auth")
 OWNER_COMMANDS = {
     "sandbox", "chats", "prefix", "topic", "topics", "model", "models",
     "reasoning", "effort", "thinking", "debug", "conv", "load", "session", "conversation",
-    "new", "reset", "reset_mood", "mood_reset", "mood", "emotions", "relationship",
+    "new", "reset", "reset_mood", "mood_reset",
 }
 PRIVATE_COMMANDS = {"memory", "remember", "recall", "forget", "portrait", "status",
                     "conv", "load", "session", "conversation", "new", "reset", "sandbox", "debug"}
@@ -105,6 +105,12 @@ class OwnerAuthMiddleware(BaseMiddleware):
                     await event.answer("⛔ Настройки может менять только владелец.")
                     return
                 return await handler(event, data)
+            if command in {"mood", "emotions", "relationship"}:
+                if owner or (event.chat.type in {"group", "supergroup"} and (
+                    topic_manager.is_chat_active(event.chat.id)
+                    or topic_manager.is_topic_active(event.chat.id, event.message_thread_id)
+                )):
+                    return await handler(event, data)
 
         # Registered groups are open to humans; configuration remains owner-only.
         if isinstance(event, types.Message) and event.chat.type in ["group", "supergroup"]:

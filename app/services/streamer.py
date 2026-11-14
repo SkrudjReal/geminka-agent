@@ -192,7 +192,7 @@ async def current_sticker_file_id(bot: Bot, file_id: str, user_id: int | None = 
     from app.services.sticker_policy import PREFERRED_PACK, check_delivery, pack_pool
 
     await check_delivery(bot, file_id, item)
-    catalog = get_bot_stickers()
+    catalog = [row for row in get_bot_stickers() if row.get("set_name") == PREFERRED_PACK]
     personal = []
     if user_id is not None:
         assets = asset_harvester.get_user_stickers(user_id)

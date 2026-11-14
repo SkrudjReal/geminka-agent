@@ -179,7 +179,8 @@ async def test_mood_commands_and_reactions_are_personal(tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "send_response", output)
     engine.apply_model_mood(42, state_name="cold", delta=-80)
     engine.apply_model_mood(43, state_name="cheerful", warmth=77)
-    message = SimpleNamespace(from_user=SimpleNamespace(id=43), answer=AsyncMock())
+    message = SimpleNamespace(from_user=SimpleNamespace(id=43, full_name="User 43"),
+                              chat=SimpleNamespace(id=43, type="private"), answer=AsyncMock())
     await handlers.cmd_mood(message, CommandObject(command="mood"))
     assert "77/100" in output.call_args.args[1]
     before = asdict(engine.get_state(42))

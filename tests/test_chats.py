@@ -32,6 +32,43 @@ def message(text, *, user_id=2, chat_id=-100123, thread=None, caption=None):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('command', ['mood', 'emotions', 'relationship'])
+async def test_mood_public_without_prefix_only_in_configured_groups(manager, command):
+    manager.add_chat(-100123, 'Group', 1)
+    callback = AsyncMock(return_value='handled')
+    middleware = middlewares.OwnerAuthMiddleware()
+    event = message(f'/{command}@example_bot', user_id=3)
+    assert await middleware(callback, event, {'event_from_user':event.from_user}) == 'handled'
+    unknown = message(f'/{command}', user_id=3, chat_id=-100999)
+    assert await middleware(callback, unknown, {'event_from_user':unknown.from_user}) is None
+
+
+@pytest.mark.asyncio
+async def test_public_mood_views_own_state_but_cannot_reset(manager, monkeypatch):
+    from unittest.mock import Mock
+
+    manager.add_chat(-100123, 'Group', 1)
+    state = SimpleNamespace(mood='playful', warmth=50, energy=60, affection=10, affinity=5,
+                            total_interactions=2, get_relationship_stage=lambda:'Знакомые',
+                            get_stage_description=lambda:'Общение')
+    engine = SimpleNamespace(get_state=Mock(return_value=state), reset_state=Mock())
+    monkeypatch.setattr(handlers, 'emotion_engine', engine)
+    send = AsyncMock()
+    monkeypatch.setattr(handlers, 'send_response', send)
+    event = message('/mood', user_id=3)
+    await handlers.cmd_mood(event, CommandObject(command='mood'))
+    assert engine.get_state.call_args.args == (3,)
+    send.assert_awaited_once()
+    report = send.call_args.args[1]
+    assert '<a href="tg://openmessage?user_id=3">User</a>' in report
+    rendered = handlers.md_to_telegram_html(report)
+    assert '<a href="tg://openmessage?user_id=3">User</a>' in rendered
+    monkeypatch.setattr(types.Message, 'answer', AsyncMock())
+    await handlers.cmd_mood(event, CommandObject(command='mood', args='reset'))
+    engine.reset_state.assert_not_called()
+
+
 def test_prefix_and_persistence(manager):
     manager.add_topic(-100123, 7, "Forum", 1)
     manager.add_chat(-100123, "Group", 1)

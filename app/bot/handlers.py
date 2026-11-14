@@ -260,13 +260,20 @@ async def process_set_reasoning(callback: types.CallbackQuery, antigravity_clien
 
 @router.message(Command("mood", "emotions", "relationship", "reset_mood", "mood_reset"))
 async def cmd_mood(message: types.Message, command: CommandObject | None = None):
-    if not check_auth(message.from_user.id):
+    group_access = message.chat.type in {"group", "supergroup"} and (
+        topic_manager.is_chat_active(message.chat.id)
+        or topic_manager.is_topic_active(message.chat.id, message.message_thread_id)
+    )
+    if not check_auth(message.from_user.id) and not group_access:
         await message.answer("⛔ Доступ ограничен.")
         return
 
     cmd_name = (command.command if command else "").lower()
     args = (command.args or "").strip().lower() if command else ""
     if cmd_name in ["reset_mood", "mood_reset"] or args in ["reset", "clear", "сброс", "дефолт", "default"]:
+        if not is_owner(message.from_user.id):
+            await message.answer("⛔ Сбрасывать настроение может только владелец.")
+            return
         emotion_engine.reset_state(message.from_user.id)
         await send_response(
             message,
@@ -293,9 +300,11 @@ async def cmd_mood(message: types.Message, command: CommandObject | None = None)
         "cold": "❄️ Холодное / Дистанция",
     }
     mood_display = mood_icons.get(state.mood, state.mood)
+    user = message.from_user
+    recipient = f'<a href="tg://openmessage?user_id={user.id}">{html.escape(user.full_name)}</a>'
 
     text = (
-        f"🌸 **Эмоциональное состояние Geminka в общении с тобой:**\n\n"
+        f"🌸 **Эмоциональное состояние Geminka в общении с {recipient}:**\n\n"
         f"• **Настроение:** `{mood_display}`\n"
         f"  _{mood_ru}_\n"
         f"• **Теплота общения:** `{state.warmth}/100` 🔥\n"
