@@ -921,7 +921,7 @@ class TelegramStreamConsumer:
 
         # Send Photo Pair Flow: 1. Main photo (with kuukhenki) -> 2. Spoiler photo (full body secret) as reply
         if send_photos:
-            from app.services.pinterest_self import send_self_photo
+            from app.services.pinterest_self import PinterestSearchUnavailable, send_self_photo
 
             match = PHOTO_PAIR_TAG_RE.search(final_raw)
             query_match = re.search(r'query="([^"]+)"', match.group(1) or '')
@@ -929,6 +929,9 @@ class TelegramStreamConsumer:
                 await send_self_photo(
                     self.bot, self.chat_id, query=html.unescape(query_match.group(1)) if query_match else None,
                     thread_id=self.message_thread_id, reply_to=self.target_message_id)
+            except PinterestSearchUnavailable as exc:
+                logger.warning("Pinterest self photo search unavailable")
+                await self.bot.send_message(self.chat_id, str(exc), message_thread_id=self.message_thread_id)
             except Exception as exc:
                 logger.warning("Pinterest self photo failed (%s)", type(exc).__name__)
                 await self.bot.send_message(self.chat_id, 'Не удалось найти и отправить новую картинку с Pinterest. Попробуй позже.',

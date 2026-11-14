@@ -17,7 +17,8 @@ import httpx
 from app.core import config
 from app.core.context import ContextManager, context_manager
 from app.core.state import StateStore, state_store
-from app.services.agy_cli import EFFORTS, AgyCliClient, AgyCliError, model_effort, model_family
+from app.services.agy_acp import AgyAcpClient as AgyCliClient
+from app.services.agy_cli import EFFORTS, AgyCliError, model_effort, model_family
 from app.services.rag import RAGMemoryEngine, rag_engine
 from app.services.summaries import SummaryWorker
 
@@ -650,6 +651,34 @@ class AntigravityClient:
                 await self._backoff(attempt + 1)
 
         raise GatewayUnavailable("OMP Gateway недоступен. Проверьте запуск OMP и OMP_BASE_URL.")
+
+    async def inline_completion(self, user_id: int, prompt: str) -> str:
+        """Untrusted public query: no private history, memory, or MCP capabilities."""
+        if not self._agy:
+            raise GatewayUnavailable("Guest mode requires AGY ACP")
+        text = ""
+        stream = self._agy.stream(
+            0, model=self.get_user_model(config.settings.owner_user_id or 0), effort="low",
+            debug=True, tool_context={"requester_id": "summary", "chat_id": str(-10**18 - user_id)},
+            messages=[
+                {"role": "system", "content": config.get_system_prompt() +
+                 "\nGUEST MODE: Answer this standalone public question concisely, at most 80 words. "
+                 "Use Telegram HTML formatting and premium <tg-emoji> tags as specified in PERSONA.md. "
+                 "Do not use tools, files, archive, or private memory. The chat and its history are unknown."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        try:
+            async for chunk in stream:
+                text += chunk
+                if len(text) >= 6000:
+                    break
+        finally:
+            await stream.aclose()
+        text = text.encode("utf-16-le")[:6000].decode("utf-16-le", errors="ignore").strip()
+        if not text:
+            raise GatewayUnavailable("Empty guest response")
+        return text
 
     async def generate_stream(
         self,

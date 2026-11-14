@@ -1063,7 +1063,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiofiles", specifier = ">=24.1.0" },
-    { name = "aiogram", specifier = ">=3.20.0,<4.0.0" },
+    { name = "aiogram", specifier = ">=3.30.0,<4.0.0" },
     { name = "aiohttp", specifier = ">=3.10.0" },
     { name = "av", specifier = ">=11,<19" },
     { name = "cairosvg", specifier = ">=2.7" },

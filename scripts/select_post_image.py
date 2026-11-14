@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -76,7 +77,11 @@ def select_images(query: str, job_id: str, output_dir: Path, registry_path: Path
 
     output_dir.mkdir(parents=True, exist_ok=True)
     used = _used_urls(registry_path)
-    medias = PinterestDL.with_api(timeout=20, verbose=False, max_retries=2).search_and_download(
+    scraper = PinterestDL.with_api(timeout=20, verbose=False, max_retries=2)
+    cookies = os.getenv("PINTEREST_COOKIES_FILE", "").strip()
+    if cookies:
+        scraper = scraper.with_cookies_path(Path(cookies).expanduser())
+    medias = scraper.search_and_download(
         query=query,
         output_dir=output_dir,
         num=_SEARCH_COUNT,

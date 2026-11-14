@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 from app.core import config
 from app.core.files import atomic_write_json, load_json
 from app.core.state import state_store
-from app.services.agy_cli import AgyCliClient
+from app.services.agy_acp import AgyAcpClient as AgyCliClient
 
 logger = logging.getLogger("geminka-scanner")
 

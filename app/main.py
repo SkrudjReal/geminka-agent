@@ -9,6 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeDefault
 
 from app.bot.batching import turn_batches
+from app.bot.guest import router as guest_router
 from app.bot.handlers import router
 from app.bot.middlewares import OwnerAuthMiddleware
 from app.core import config
@@ -81,6 +82,7 @@ async def main() -> None:
     dp.message_reaction.outer_middleware(auth_mw)
 
     # 4. Include handler routes
+    dp.include_router(guest_router)
     dp.include_router(router)
 
     logger.info("Starting Geminka Telegram Bot (direct agy CLI + Clean Architecture)...")

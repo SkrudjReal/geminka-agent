@@ -13,15 +13,19 @@ import logging
 import os
 import re
 import shutil
+import signal
 import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from app.core import config
 from app.services.sandbox import SandboxError, agy_sandbox_command
 
 logger = logging.getLogger(__name__)
+_BACKGROUND_SLOTS = WeakKeyDictionary()
 
 
 class AgyCliError(RuntimeError):
@@ -86,6 +90,9 @@ class _Session:
     tool_context: tuple[tuple[str, str], ...] = ()
     sandbox_enabled: bool = True
     group_context_state: dict | None = None
+    last_used: float = field(default_factory=time.monotonic)
+    borrowers: int = 0
+    conversation_id: str = ""
 
 
 class AgyCliClient:
@@ -109,10 +116,21 @@ class AgyCliClient:
         self._lifecycle_lock = asyncio.Lock()
         self.model_labels: dict[str, str] = {}
         self._catalog: list[str] = []
+        self.max_sessions = max(1, int(os.getenv("AGY_MAX_LIVE_SESSIONS", "2")))
+        self.idle_seconds = max(1, int(os.getenv("AGY_SESSION_IDLE_SECONDS", "300")))
+        self._available = asyncio.Condition(self._lifecycle_lock)
+        self._reaper = None
+        self._closed = False
+        self._parked: dict[int, dict] = {}
 
     async def aclose(self) -> None:
-        async with self._lifecycle_lock:
+        self._closed = True
+        if self._reaper:
+            self._reaper.cancel()
+            await asyncio.gather(self._reaper, return_exceptions=True)
+        async with self._available:
             await self._close_all()
+            self._available.notify_all()
 
     async def _close_all(self) -> None:
         sessions = [*self._sessions.values(), *self._one_shots.values()]
@@ -153,6 +171,7 @@ class AgyCliClient:
         ], read_only=read_only, tools_enabled=requester != "summary", group_id=group_id)
 
     def reset_user(self, user_id: int) -> None:
+        self._parked.pop(user_id, None)
         session = self._sessions.pop(user_id, None)
         if session and session.process.returncode is None:
             session.process.terminate()
@@ -250,7 +269,7 @@ class AgyCliClient:
             return
 
         session = await self._get_session(user_id, cli_model, effort, tool_context)
-        async with session.lock:
+        async with self._lease(session):
             next_group_state = dict(session.group_context_state or {})
             if group_input:
                 current = await with_group_context(next_group_state)
@@ -297,8 +316,72 @@ class AgyCliClient:
         effort: str,
         tool_context: Mapping[str, str] | None = None,
     ) -> _Session:
-        async with self._lifecycle_lock:
-            return await self._get_session_locked(user_id, model, effort, tool_context)
+        async with self._available:
+            if self._reaper is None:
+                self._reaper = asyncio.create_task(self._reap_idle())
+            while not self._closed:
+                await self._expire_idle()
+                current = self._sessions.get(user_id)
+                matching = current and (current.model, current.effort, current.tool_context, current.sandbox_enabled) == (
+                    model, effort, self._tool_context_signature(tool_context), self.sandbox_enabled)
+                if current and not matching and (current.borrowers or current.lock.locked()):
+                    await self._available.wait()
+                    continue
+                if not current and len(self._sessions) >= self.max_sessions:
+                    idle = [(uid, s) for uid, s in self._sessions.items() if not s.borrowers and not s.lock.locked()]
+                    if not idle:
+                        await self._available.wait()
+                        continue
+                    uid, oldest = min(idle, key=lambda pair: pair[1].last_used)
+                    await self._park(uid, oldest)
+                if not await self._prepare_session(user_id, model, effort, tool_context):
+                    await self._available.wait()
+                    continue
+                session = await self._get_session_locked(user_id, model, effort, tool_context)
+                session.borrowers += 1
+                return session
+            raise AgyNoResponseError("AGY client is closed")
+
+    async def _prepare_session(self, user_id, model, effort, tool_context):
+        return True
+
+    @asynccontextmanager
+    async def _lease(self, session):
+        try:
+            async with session.lock:
+                yield
+        finally:
+            async with self._available:
+                session.borrowers = max(0, session.borrowers - 1)
+                session.last_used = time.monotonic()
+                self._available.notify_all()
+
+    async def _park(self, user_id, session):
+        if session.conversation_id and session.started:
+            self._parked[user_id] = {
+                'conversation_id': session.conversation_id, 'instructions': session.instructions,
+                'group_context_state': session.group_context_state, 'model': session.model,
+                'effort': session.effort, 'tool_context': session.tool_context,
+                'sandbox_enabled': session.sandbox_enabled,
+            }
+        self._sessions.pop(user_id, None)
+        await self._close_session(session)
+        logger.info("agy session released live=%d", len(self._sessions))
+
+    async def _expire_idle(self):
+        now = time.monotonic()
+        for uid, session in list(self._sessions.items()):
+            if not session.borrowers and not session.lock.locked() and (
+                session.process.returncode is not None or now - session.last_used >= self.idle_seconds
+            ):
+                await self._park(uid, session)
+
+    async def _reap_idle(self):
+        while True:
+            await asyncio.sleep(min(30, self.idle_seconds))
+            async with self._available:
+                await self._expire_idle()
+                self._available.notify_all()
 
     async def _get_session_locked(
         self, user_id: int, model: str, effort: str,
@@ -317,23 +400,48 @@ class AgyCliClient:
         if current:
             await self._close_session(current)
 
+        saved = self._parked.pop(user_id, None)
+        if saved and (saved['model'], saved['effort'], saved['tool_context'], saved['sandbox_enabled']) != (
+            model, effort, context_signature, self.sandbox_enabled
+        ):
+            saved = None
+        command = self._launch_command(model, effort, tool_context)
+        if saved:
+            command.extend(['--conversation', saved['conversation_id']])
         process = await asyncio.create_subprocess_exec(
-            *self._launch_command(model, effort, tool_context),
+            *command,
             cwd=self.project_dir,
             env=self._tool_env(tool_context),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         session = _Session(
             process, model, effort, asyncio.Lock(), tool_context=context_signature,
             sandbox_enabled=self.sandbox_enabled,
         )
         session.stderr_task = asyncio.create_task(self._drain_stderr(session))
+        if saved:
+            session.started = True
+            session.conversation_id = saved['conversation_id']
+            session.instructions = saved['instructions']
+            session.group_context_state = saved['group_context_state']
         self._sessions[user_id] = session
         return session
 
     async def _stream_once(
+        self, model, effort, prompt, tool_context=None,
+    ) -> AsyncGenerator[str, None]:
+        loop = asyncio.get_running_loop()
+        slots = _BACKGROUND_SLOTS.setdefault(loop, asyncio.Semaphore(1))
+        async with slots:
+            if self._closed:
+                raise AgyNoResponseError("AGY client is closed")
+            async for token in self._stream_once_unlimited(model, effort, prompt, tool_context):
+                yield token
+
+    async def _stream_once_unlimited(
         self,
         model: str,
         effort: str,
@@ -348,6 +456,7 @@ class AgyCliClient:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
             session = _Session(
                 process, model, effort, asyncio.Lock(),
@@ -437,6 +546,9 @@ class AgyCliClient:
                 continue
 
             result = event.get("result", {})
+            conversation_id = result.get("conversation_id")
+            if isinstance(conversation_id, str) and conversation_id:
+                session.conversation_id = conversation_id
             if str(result.get("status", "")).casefold() != "success":
                 error = self._error_from_text(json.dumps(result, ensure_ascii=False))
                 # Provider errors may contain an entire private transcript in response.
@@ -467,14 +579,21 @@ class AgyCliClient:
     async def _close_session(self, session: _Session) -> None:
         if session.process.returncode is None:
             try:
-                session.process.terminate()
+                pid = getattr(session.process, "pid", None)
+                if pid and os.getpgid(pid) == pid:
+                    os.killpg(pid, signal.SIGTERM)
+                else:
+                    session.process.terminate()
             except ProcessLookupError:
                 pass
             try:
                 await asyncio.wait_for(session.process.wait(), timeout=3)
             except asyncio.TimeoutError:
                 try:
-                    session.process.kill()
+                    if pid and os.getpgid(pid) == pid:
+                        os.killpg(pid, signal.SIGKILL)
+                    else:
+                        session.process.kill()
                 except ProcessLookupError:
                     pass
                 await session.process.wait()

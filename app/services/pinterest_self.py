@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import random
 import sqlite3
 import sys
@@ -18,6 +19,10 @@ from app.core.files import atomic_write_json
 from app.services.media_input import run_media
 
 _locks = {}
+
+
+class PinterestSearchUnavailable(ValueError):
+    """Pinterest returned no usable search results or the worker failed."""
 
 
 async def send_self_photo(bot, chat_id, *, query=None, thread_id=None, reply_to=None, database=None):
@@ -36,10 +41,18 @@ async def send_self_photo(bot, chat_id, *, query=None, thread_id=None, reply_to=
                 root = Path(directory)
                 registry = root / 'used.json'
                 atomic_write_json(registry, {'used': [{'url': r[0], 'pin_url': r[1]} for r in used]})
-                raw = await run_media(
-                    sys.executable, str(config.BASE_DIR / 'scripts/select_post_image.py'),
-                    '--query', query, '--job-id', uuid.uuid4().hex,
-                    '--output-dir', str(root / 'images'), '--registry', str(registry), timeout=240)
+                try:
+                    raw = await run_media(
+                        sys.executable, str(config.BASE_DIR / 'scripts/select_post_image.py'),
+                        '--query', query, '--job-id', uuid.uuid4().hex,
+                        '--output-dir', str(root / 'images'), '--registry', str(registry), timeout=240)
+                except ValueError as exc:
+                    if not os.getenv('PINTEREST_COOKIES_FILE', '').strip():
+                        raise PinterestSearchUnavailable(
+                            'Pinterest не вернул картинки без авторизации. Владельцу нужно подключить '
+                            'cookies сессии через PINTEREST_COOKIES_FILE.') from exc
+                    raise PinterestSearchUnavailable(
+                        'Pinterest не вернул картинки. Проверь cookies сессии и поисковый запрос.') from exc
                 candidates = json.loads(raw)['candidates']
                 random.shuffle(candidates)
                 hashes = {r[2] for r in used}

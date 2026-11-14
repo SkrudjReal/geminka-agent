@@ -14,7 +14,7 @@ from aiogram.types import MessageEntity, ReplyParameters
 
 from app.core import config
 from app.core.files import atomic_write_json, load_json
-from app.services.agy_cli import AgyCliClient
+from app.services.agy_acp import AgyAcpClient as AgyCliClient
 from app.services.collector_mcp import _request, collector_config
 from app.services.topics import topic_manager
 

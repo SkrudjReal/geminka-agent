@@ -10,7 +10,7 @@ from aiogram.types import ReplyParameters
 
 from app.core import config
 from app.core.state import state_store
-from app.services.agy_cli import AgyCliClient
+from app.services.agy_acp import AgyAcpClient as AgyCliClient
 from app.services.topics import topic_manager
 
 logger = logging.getLogger(__name__)
