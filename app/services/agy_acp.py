@@ -1,7 +1,9 @@
 """Multiplex independent ACP conversations within each filesystem trust boundary."""
 
 import asyncio
+import base64
 import json
+import logging
 import shutil
 import time
 from types import SimpleNamespace
@@ -9,10 +11,58 @@ from types import SimpleNamespace
 from app.core import config
 from app.services.agy_cli import AgyCliClient, AgyCliError, AgyNoResponseError, _Session
 
+logger = logging.getLogger(__name__)
+
+
+class _VisibleOutput:
+    """Suppress only AGY's standalone recoverable diagnostic, across chunk boundaries."""
+
+    warnings = ("⚠ Model produced invalid output.", "⚠️ Model produced invalid output.")
+
+    def __init__(self):
+        self.pending = ""
+        self.line_start = True
+        self.fenced_code = False
+
+    def feed(self, text):
+        output = []
+        for char in text:
+            if not self.line_start:
+                output.append(char)
+                self.line_start = char == "\n"
+                continue
+            self.pending += char
+            if self.pending == "```":
+                self.fenced_code = not self.fenced_code
+                output.append(self.pending)
+                self.pending = ""
+                self.line_start = False
+            elif "```".startswith(self.pending):
+                continue
+            elif not self.fenced_code and any(self.pending in (warning + "\n", warning + "\r\n") for warning in self.warnings):
+                self.pending = ""
+                logger.warning("AGY reported an empty model step; awaiting completion of the same turn")
+            elif not self.fenced_code and any(warning.startswith(self.pending) or self.pending == warning + "\r"
+                                              for warning in self.warnings):
+                continue
+            else:
+                output.append(self.pending)
+                self.line_start = self.pending.endswith("\n")
+                self.pending = ""
+        return "".join(output)
+
+    def finish(self):
+        pending, self.pending = self.pending, ""
+        if pending.rstrip("\r") in self.warnings:
+            logger.warning("AGY reported an empty model step without a visible response")
+            return ""
+        return pending
+
 
 class _Peer:
-    def __init__(self, process, timeout):
+    def __init__(self, process, timeout, *, allow_permissions=True):
         self.process = process
+        self.allow_permissions = allow_permissions
         self.timeout = timeout
         self.pending = {}
         self.streams = {}
@@ -71,7 +121,7 @@ class _Peer:
                 elif "id" in message:
                     if message["method"] == "session/request_permission":
                         options = message.get("params", {}).get("options", [])
-                        allow = next((o for o in options if o.get("kind") == "allow_once"), None)
+                        allow = next((o for o in options if o.get("kind") == "allow_once"), None) if self.allow_permissions else None
                         result = {"outcome": {"outcome": "selected", "optionId": allow["optionId"]}} if allow else {"outcome": {"outcome": "cancelled"}}
                         await self._write(dict(jsonrpc="2.0", id=message["id"], result=result))
                     else:
@@ -92,6 +142,16 @@ class _Peer:
 
 class AgyAcpClient(AgyCliClient):
     """Reuse the existing bounded session leases, bootstrap and context cursors."""
+
+    async def stream_image(self, *, model, prompt, path):
+        """Send image pixels directly in an isolated, tool-free ACP turn."""
+        if path.stat().st_size > 15 * 1024 * 1024:
+            raise ValueError('Vision image exceeds 15 MB')
+        content = [{'type': 'text', 'text': prompt},
+                   {'type': 'image', 'mimeType': 'image/jpeg',
+                    'data': base64.b64encode(path.read_bytes()).decode('ascii')}]
+        async for token in self._stream_once(model, 'low', content, {'requester_id': 'summary'}):
+            yield token
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -132,7 +192,7 @@ class AgyAcpClient(AgyCliClient):
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=4 * 1024 * 1024,
         )
-        peer = _Peer(process, self.timeout_seconds)
+        peer = _Peer(process, self.timeout_seconds, allow_permissions=not read_only)
         try:
             await peer.call("initialize", {"protocolVersion": 1, "clientCapabilities": {}})
         except BaseException:
@@ -222,19 +282,25 @@ class AgyAcpClient(AgyCliClient):
         queue = asyncio.Queue()
         peer.streams[session_id] = queue
         task = asyncio.create_task(peer.call("session/prompt", {
-            "sessionId": session_id, "prompt": [{"type": "text", "text": prompt}],
+            "sessionId": session_id, "prompt": prompt if isinstance(prompt, list) else [{"type": "text", "text": prompt}],
         }))
         task.add_done_callback(lambda _: queue.put_nowait(None))
         received = False
+        visible = _VisibleOutput()
         try:
             while True:
                 token = await queue.get()
                 if token is None:
                     break
+                token = visible.feed(token)
                 if token:
-                    received = True
+                    received = received or bool(token.strip())
                     yield token
             result = await task
+            tail = visible.finish()
+            if tail:
+                received = received or bool(tail.strip())
+                yield tail
             if result.get("stopReason") != "end_turn" or not received:
                 raise AgyNoResponseError("AGY ACP не завершил текстовый ответ; автоматический повтор отключён.")
         finally:

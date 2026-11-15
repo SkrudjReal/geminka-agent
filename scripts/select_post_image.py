@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,8 +17,8 @@ from PIL import Image, ImageDraw, ImageOps
 from pinterest_dl import PinterestDL
 
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
-_CANDIDATE_COUNT = 10
-_SEARCH_COUNT = 25
+_CANDIDATE_COUNT = 40
+_SEARCH_COUNT = 200
 _CELL_SIZE = (240, 300)
 _COLUMNS = 5
 
@@ -44,7 +46,7 @@ def _make_contact_sheet(candidates: list[dict[str, Any]], output: Path) -> None:
 
     for candidate in candidates:
         index = candidate["index"]
-        image_path = Path(candidate["path"])
+        image_path = Path(candidate.get("preview_path", candidate["path"]))
         with Image.open(image_path) as source:
             image = ImageOps.exif_transpose(source).convert("RGB")
             image.thumbnail((_CELL_SIZE[0] - 16, _CELL_SIZE[1] - 52))
@@ -68,7 +70,35 @@ def _make_telegram_photo(source_path: Path, target_path: Path) -> None:
         image.close()
 
 
-def select_images(query: str, job_id: str, output_dir: Path, registry_path: Path) -> dict[str, Any]:
+def _video_preview(source: Path, target: Path) -> None:
+    raw = subprocess.check_output(['ffprobe', '-v', 'error', '-protocol_whitelist', 'file,pipe',
+                                   '-show_entries', 'format=duration', '-of',
+                                   'default=noprint_wrappers=1:nokey=1', str(source)], timeout=15)
+    seconds = float(raw)
+    if not 0 < seconds <= 600:
+        raise ValueError('Video duration out of bounds')
+    frames = []
+    try:
+        for index, fraction in enumerate((0.2, 0.5, 0.8)):
+            frame = target.with_name(f'{target.stem}-{index}.jpg')
+            frames.append(frame)
+            subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-ss', str(seconds * fraction),
+                            '-protocol_whitelist', 'file,pipe', '-i', str(source), '-frames:v', '1',
+                            '-vf', 'scale=320:320:force_original_aspect_ratio=decrease',
+                            '-threads', '1', str(frame)], check=True, timeout=20,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        sheet = Image.new('RGB', (960, 320), 'white')
+        for index, frame in enumerate(frames):
+            with Image.open(frame) as image:
+                sheet.paste(image, (index * 320, 0))
+        sheet.save(target)
+    finally:
+        for frame in frames:
+            frame.unlink(missing_ok=True)
+
+
+def select_images(query: str, job_id: str, output_dir: Path, registry_path: Path,
+                  include_videos: bool = False) -> dict[str, Any]:
     if not _JOB_ID.fullmatch(job_id):
         raise ValueError("job_id must be a 32-character lowercase hex UUID")
     query = query.strip()
@@ -81,14 +111,17 @@ def select_images(query: str, job_id: str, output_dir: Path, registry_path: Path
     cookies = os.getenv("PINTEREST_COOKIES_FILE", "").strip()
     if cookies:
         scraper = scraper.with_cookies_path(Path(cookies).expanduser())
-    medias = scraper.search_and_download(
-        query=query,
-        output_dir=output_dir,
-        num=_SEARCH_COUNT,
-        min_resolution=(512, 512),
-        caption="none",
-        delay=0.4,
-    ) or []
+    # Paginate metadata first; do not download already-used pins.
+    from itertools import islice
+
+    pool = list(islice(scraper.iter_search(query, min_resolution=(512, 512), delay=0.4),
+                       min(1000, _SEARCH_COUNT + len(used))))
+    pool = [media for media in pool if getattr(media, 'src', None) not in used
+            and getattr(media, 'origin', None) not in used
+            and (include_videos or not getattr(media, 'video_stream', None))]
+    random.shuffle(pool)
+    # Reuse pinterest-dl's downloader, including its validation and retry behavior.
+    medias = scraper._download_and_save(pool[:80], output_dir, include_videos, False, None, 'none') or []
 
     candidates = []
     seen: set[str] = set()
@@ -101,20 +134,20 @@ def select_images(query: str, job_id: str, output_dir: Path, registry_path: Path
             or url in used
             or getattr(media, "origin", None) in used
             or url in seen
-            or getattr(media, "video_stream", None)
             or not path
             or not Path(path).is_file()
         ):
             continue
         seen.add(url)
-        try:
-            with Image.open(path) as image:
-                image.verify()
-        except Exception:
+        is_video = bool(getattr(media, 'video_stream', None)) and Path(path).suffix.lower() == '.mp4'
+        if Path(path).stat().st_size > 49 * 1024 * 1024:
             continue
         normalized_path = output_dir / f"preview_{len(candidates) + 1}.jpg"
         try:
-            _make_telegram_photo(Path(path), normalized_path)
+            if is_video:
+                _video_preview(Path(path), normalized_path)
+            else:
+                _make_telegram_photo(Path(path), normalized_path)
         except Exception:
             normalized_path.unlink(missing_ok=True)
             continue
@@ -124,7 +157,9 @@ def select_images(query: str, job_id: str, output_dir: Path, registry_path: Path
                 "url": url,
                 "pin_url": getattr(media, "origin", None),
                 "alt": getattr(media, "alt", None),
-                "path": str(normalized_path.resolve()),
+                "path": str(Path(path).resolve() if is_video else normalized_path.resolve()),
+                "preview_path": str(normalized_path.resolve()),
+                "kind": "video" if is_video else "photo",
                 "resolution": list(getattr(media, "resolution", ())),
             }
         )
@@ -162,9 +197,10 @@ def main() -> int:
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--registry", type=Path, required=True)
+    parser.add_argument("--include-videos", action='store_true')
     args = parser.parse_args()
     try:
-        result = select_images(args.query, args.job_id, args.output_dir, args.registry)
+        result = select_images(args.query, args.job_id, args.output_dir, args.registry, args.include_videos)
     except Exception as exc:
         print(f"Pinterest preview failed: {exc}", file=sys.stderr)
         return 1

@@ -96,6 +96,20 @@ class StateStore:
             ).fetchone()
         return row is None or row["value"] != "off"
 
+    def mute_chat(self, chat_id: int, seconds: int = 1800) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "INSERT INTO runtime_settings(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (f"chat_mute:{chat_id}", str(time.time() + seconds)),
+            )
+
+    def is_chat_muted(self, chat_id: int) -> bool:
+        with self._lock, self._connect() as connection:
+            row = connection.execute("SELECT value FROM runtime_settings WHERE key=?",
+                                     (f"chat_mute:{chat_id}",)).fetchone()
+        return row is not None and float(row["value"]) > time.time()
+
     def set_sandbox_enabled(self, enabled: bool) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(

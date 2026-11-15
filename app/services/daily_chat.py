@@ -14,6 +14,7 @@ from aiogram.types import MessageEntity, ReplyParameters
 
 from app.core import config
 from app.core.files import atomic_write_json, load_json
+from app.core.state import state_store
 from app.services.agy_acp import AgyAcpClient as AgyCliClient
 from app.services.collector_mcp import _request, collector_config
 from app.services.topics import topic_manager
@@ -206,6 +207,8 @@ class DailyChat:
     async def tick(self, now=None):
         now = now or datetime.now().astimezone()
         for chat_id, thread_id in self.targets().items():
+            if state_store.is_chat_muted(chat_id):
+                continue
             if not self.due(chat_id, now):
                 continue
             # Claim before any side effects: uncertain deliveries must never be replayed.

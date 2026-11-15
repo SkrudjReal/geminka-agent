@@ -14,6 +14,20 @@ from app.services.group_collector import (
 from app.services.topics import TopicManager
 
 
+def test_archive_credentials_are_removed_before_model_context(monkeypatch):
+    from app.services.public_output import SAFE_REPLY
+
+    secret = 'synthetic-archive-secret-0123456789'
+    monkeypatch.setenv('COLLECTOR_API_TOKEN', secret)
+    message = {'chat_id': -1001, 'text': secret}
+    result = scoped_result({'ok': True, 'result': {
+        'structuredContent': {'messages': [message]},
+        'content': [{'type': 'text', 'text': json.dumps({'messages': [message]})}],
+    }}, None)
+    assert result['result']['structuredContent']['messages'][0]['text'] == SAFE_REPLY
+    assert secret not in json.dumps(result)
+
+
 def test_group_tool_scopes_and_cross_chat_reply_redaction():
     assert scoped_arguments(-1001, "search", {"query": "тема"}) == {"query": "тема", "chat_id": -1001}
     assert scoped_arguments(-1001, "get_reply_partners", {"user_id": 42}) == {"user_id": 42, "scope": {"chat_id": -1001}}

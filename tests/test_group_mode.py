@@ -75,6 +75,10 @@ assert not (root/'data/memory.db').exists()
 assert not Path({str(host / 'private.txt')!r}).exists()
 assert (root/'data/default_emojis.json').is_file()
 assert Path.home().name.endswith('-mod-1001')
+import json
+policy=json.loads((Path.home()/'.gemini/antigravity-cli/settings.json').read_text())
+assert policy['allowNonWorkspaceAccess'] is False
+assert 'command(*)' not in policy['permissions']['allow']
 assert not (root/'data/agy_sandbox').exists()
 binary=Path.home()/'.gemini/antigravity-cli/bin'
 settings=binary.parent/'settings.json'

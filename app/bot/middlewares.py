@@ -58,6 +58,21 @@ class OwnerAuthMiddleware(BaseMiddleware):
             return await handler(event, data)
         command = ""
         if isinstance(event, types.Message):
+            text = event.text or event.caption or ''
+            command_name = text.split()[0].split('@', 1)[0].lower() if text.startswith('/') else ''
+            if event.chat.type in {'group', 'supergroup'}:
+                from app.bot.chat_mute import mute_columbina
+                from app.core.state import state_store
+
+                if command_name == '/mute_columbina':
+                    addressed = text.split()[0].partition('@')[2]
+                    bot = data.get('bot')
+                    if addressed and addressed.lower() != (await bot.me()).username.lower():
+                        return
+                    await mute_columbina(event, bot)
+                    return
+                if state_store.is_chat_muted(event.chat.id):
+                    return
             if event.chat.type in {"group", "supergroup"}:
                 from app.services.group_context import observe
 

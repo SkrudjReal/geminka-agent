@@ -6,9 +6,16 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeDefault
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeDefault,
+)
 
 from app.bot.batching import turn_batches
+from app.bot.chat_mute import block_muted_delivery
 from app.bot.guest import router as guest_router
 from app.bot.handlers import router
 from app.bot.middlewares import OwnerAuthMiddleware
@@ -23,7 +30,7 @@ logger = logging.getLogger("geminka-main")
 
 
 async def setup_bot_commands(bot: Bot) -> None:
-    """Configures visible Telegram bot commands menu for private chats and default scope."""
+    """Keep private controls out of the public group command menu."""
     commands = [
         BotCommand(command="start", description="👋 Главное меню и знакомство с Geminka"),
         BotCommand(command="model", description="⚡ Выбор AI модели (Gemini 3.8 / Claude 4.6)"),
@@ -47,8 +54,18 @@ async def setup_bot_commands(bot: Bot) -> None:
     ]
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
-        await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-        logger.info("Bot commands successfully registered for all private chats.")
+        await bot.set_my_commands([], scope=BotCommandScopeDefault())
+        await bot.delete_my_commands(scope=BotCommandScopeAllChatAdministrators())
+        group_commands = [
+            BotCommand(command="mood", description="💖 Настроение Geminka в общении с тобой"),
+            BotCommand(command="mute_columbina", description="🔇 Пауза на 30 минут (администраторы)"),
+        ]
+        await bot.set_my_commands(
+            group_commands[:1],
+            scope=BotCommandScopeAllGroupChats(),
+        )
+        await bot.set_my_commands(group_commands, scope=BotCommandScopeAllChatAdministrators())
+        logger.info("Bot command menus registered: private controls, group mood, administrator mute.")
     except Exception as e:
         logger.warning("Failed to register bot commands: %s", e)
 
@@ -73,6 +90,7 @@ async def main() -> None:
         token=config.settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
+    bot.session.middleware(block_muted_delivery)
     dp = Dispatcher(antigravity_client=antigravity_client)
 
     # 3. Outer middleware registration

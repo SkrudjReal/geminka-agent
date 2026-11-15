@@ -4,8 +4,93 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.agy_acp import AgyAcpClient, _Peer
+from app.services.agy_acp import AgyAcpClient, _Peer, _VisibleOutput
 from app.services.agy_cli import AgyNoResponseError
+
+
+@pytest.mark.parametrize('allowed', [True, False])
+async def test_permission_requests_fail_closed_for_restricted_peers(allowed):
+    process = SimpleNamespace(stdout=asyncio.StreamReader(), stderr=asyncio.StreamReader())
+    writes = []
+    async def drain():
+        pass
+    process.stdin = SimpleNamespace(write=lambda data: writes.append(json.loads(data)), drain=drain)
+    peer = _Peer(process, 1, allow_permissions=allowed)
+    process.stdout.feed_data((json.dumps({'id': 1, 'method': 'session/request_permission',
+                                         'params': {'options': [{'kind': 'allow_once', 'optionId': 'yes'}]}}) + '\n').encode())
+    process.stdout.feed_eof()
+    await peer.reader
+    peer.stderr.cancel()
+    await asyncio.gather(peer.stderr, return_exceptions=True)
+    outcome = writes[0]['result']['outcome']
+    assert outcome['outcome'] == ('selected' if allowed else 'cancelled')
+
+
+@pytest.mark.parametrize('warning', _VisibleOutput.warnings)
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_empty_step_warning_is_removed_at_every_chunk_boundary(warning, newline):
+    source = f'Начало\n{warning}{newline}Продолжение <b>ответа</b>'
+    for boundary in range(len(source) + 1):
+        visible = _VisibleOutput()
+        result = visible.feed(source[:boundary]) + visible.feed(source[boundary:]) + visible.finish()
+        assert result == 'Начало\nПродолжение <b>ответа</b>'
+
+
+@pytest.mark.parametrize('source', [
+    'Обычный ответ', '⚠️ Важное предупреждение',
+    'Что означает «⚠ Model produced invalid output.»?',
+    '⚠ Model produced invalid output. Это цитата в строке.',
+    '⚠ Model produced', '<code>⚠ Model produced invalid output.</code>',
+    '```text\n⚠ Model produced invalid output.\n```',
+])
+def test_unrelated_warnings_and_quoted_diagnostics_are_preserved(source):
+    visible = _VisibleOutput()
+    assert ''.join(visible.feed(char) for char in source) + visible.finish() == source
+
+
+async def test_recovered_warning_does_not_replay_prompt_or_tools(acp, monkeypatch):
+    client, calls, _ = acp
+    session = await client._get_session(1, 'gemini-low', 'low', {'requester_id': 'summary'})
+    peer = session.peer
+    original = peer.call
+
+    async def call(method, params):
+        if method == 'session/prompt':
+            calls.append((peer.process, {'method': method}))
+            for chunk in ['⚠ Mo', 'del produced invalid output.', '\n', 'Готово']:
+                peer.streams[session.conversation_id].put_nowait(chunk)
+            return {'stopReason': 'end_turn'}
+        return await original(method, params)
+
+    monkeypatch.setattr(peer, 'call', call)
+    try:
+        result = ''.join([chunk async for chunk in client._send(session, 'hello')])
+        assert result == 'Готово'
+        assert sum(m['method'] == 'session/prompt' for _, m in calls) == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize('warning', ['⚠ Model produced invalid output.', '\n⚠ Model produced invalid output.\n'])
+async def test_warning_only_turn_is_not_a_success_or_retryable(acp, monkeypatch, warning):
+    client, _, _ = acp
+    session = await client._get_session(1, 'gemini-low', 'low', {'requester_id': 'summary'})
+    peer = session.peer
+    original = peer.call
+
+    async def call(method, params):
+        if method == 'session/prompt':
+            peer.streams[session.conversation_id].put_nowait(warning)
+            return {'stopReason': 'end_turn'}
+        return await original(method, params)
+
+    monkeypatch.setattr(peer, 'call', call)
+    try:
+        with pytest.raises(AgyNoResponseError) as error:
+            _ = [chunk async for chunk in client._send(session, 'hello')]
+        assert not error.value.retryable
+    finally:
+        await client.aclose()
 
 
 @pytest.fixture

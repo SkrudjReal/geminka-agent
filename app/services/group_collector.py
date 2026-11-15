@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from app.services.collector_mcp import ALLOWED_TOOLS, _request, collector_config
+from app.services.public_output import safe_public_text
 from app.services.topics import topic_manager
 
 GROUP_TOOLS = ALLOWED_TOOLS - {"list_users", "get_user_history", "archive_status"}
@@ -76,14 +77,26 @@ def _redact_other_chats(value: Any, chat_id: int | None) -> Any:
 def scoped_result(result: dict, chat_id: int | None) -> dict:
     result = _redact_other_chats(result, chat_id)
     payload = result.get("result", {})
+    if 'structuredContent' in payload:
+        payload['structuredContent'] = _scrub_archive(payload['structuredContent'])
     # MCP may carry the same JSON as structuredContent and text content.
     for block in payload.get("content", []):
         if block.get("type") == "text":
             try:
-                block["text"] = json.dumps(_redact_other_chats(json.loads(block["text"]), chat_id), ensure_ascii=False)
+                block["text"] = json.dumps(_scrub_archive(_redact_other_chats(json.loads(block["text"]), chat_id)), ensure_ascii=False)
             except (ValueError, TypeError):
                 block["text"] = "Неструктурированный ответ архива скрыт в групповом режиме."
     return result
+
+
+def _scrub_archive(value):
+    if isinstance(value, str):
+        return safe_public_text(value)
+    if isinstance(value, dict):
+        return {key: _scrub_archive(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_scrub_archive(item) for item in value]
+    return value
 
 
 def chat_page(result: dict, arguments: dict) -> dict:

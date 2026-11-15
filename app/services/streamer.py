@@ -730,6 +730,10 @@ class TelegramStreamConsumer:
                        for index, part in enumerate(parts))
 
     def _format_html(self, text: str) -> str:
+        if self.chat_id < 0:
+            from app.services.public_output import safe_public_text
+
+            text = safe_public_text(text)
         return md_to_telegram_html(self._emoji_policy(text))
 
     def _local_file(self, raw_path: str) -> Path | None:
@@ -919,15 +923,19 @@ class TelegramStreamConsumer:
             except Exception as e:
                 logger.warning(f"Failed to send follow-up RP banner: {e}")
 
-        # Send Photo Pair Flow: 1. Main photo (with kuukhenki) -> 2. Spoiler photo (full body secret) as reply
+        # Pinterest photo or album, capped at ten images.
         if send_photos:
             from app.services.pinterest_self import PinterestSearchUnavailable, send_self_photo
 
             match = PHOTO_PAIR_TAG_RE.search(final_raw)
             query_match = re.search(r'query="([^"]+)"', match.group(1) or '')
+            count_match = re.search(r'count="(\d+)"', match.group(1) or '')
+            type_match = re.search(r'type="(photo|video|any)"', match.group(1) or '')
             try:
                 await send_self_photo(
                     self.bot, self.chat_id, query=html.unescape(query_match.group(1)) if query_match else None,
+                    count=int(count_match.group(1)) if count_match else 1,
+                    media_type=type_match.group(1) if type_match else 'any',
                     thread_id=self.message_thread_id, reply_to=self.target_message_id)
             except PinterestSearchUnavailable as exc:
                 logger.warning("Pinterest self photo search unavailable")

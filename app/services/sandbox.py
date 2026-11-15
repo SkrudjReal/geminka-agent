@@ -98,8 +98,8 @@ def agy_sandbox_command(
     _write_config(workspace / "AGENTS.md", "")
     settings = home / "settings.json"
     _write_config(settings, json.dumps({
-        "allowNonWorkspaceAccess": True,
-        "permissions": {"allow": ["command(*)", "mcp(geminka-bot-api/*)"]},
+        "allowNonWorkspaceAccess": group_id is None,
+        "permissions": {"allow": (["command(*)"] if group_id is None else []) + ["mcp(geminka-bot-api/*)"]},
         "trustedWorkspaces": [str(workspace), str(project_dir.resolve())],
     }))
     # AGY validates settings with atomic rename; a file bind mount makes that fail.

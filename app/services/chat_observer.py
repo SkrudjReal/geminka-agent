@@ -82,6 +82,8 @@ class ChatObserver:
         if not rows:
             return False
         chat_id, thread_id = rows[0]['chat_id'], rows[0]['thread_id'] or None
+        if state_store.is_chat_muted(chat_id):
+            return True
         if not self.enabled(chat_id, thread_id):
             return True
         visible = [row for row in rows if not self.store.is_debug_mode(row['user_id'])]
