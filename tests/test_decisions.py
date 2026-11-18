@@ -8,6 +8,19 @@ import pytest
 from app.services.decisions import DecisionClient, choice
 
 
+async def test_participation_is_narrow_and_preserves_abstention():
+    from unittest.mock import AsyncMock
+
+    client = DecisionClient()
+    client.ask = AsyncMock(return_value={'participation': {'choice': 'silent'}})
+    assert await client.participation('клумба', user_id=42, hurt=80, apologies=0, history=[]) == 'silent'
+    question = client.ask.call_args.args[1][0]
+    assert {item['value'] for item in question['choices']} == {'silent', 'answer', 'acknowledge'}
+    client.ask.return_value = None
+    assert await client.participation('клумба', user_id=42, hurt=80, apologies=0, history=[]) is None
+    await client.aclose()
+
+
 def client_for(monkeypatch, handler, provider='luna'):
     monkeypatch.setenv('DECISION_PROVIDER', provider)
     monkeypatch.setenv('OPENAI_API_KEY', 'test-not-a-secret')

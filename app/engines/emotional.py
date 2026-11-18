@@ -8,6 +8,7 @@ Tracks:
 """
 
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -63,6 +64,13 @@ def _clamp(value: int, low: int = 0, high: int = 100) -> int:
 def _contains_any(text_lower: str, tokens: tuple[str, ...]) -> bool:
     return any(token in text_lower for token in tokens)
 
+
+def own_words(text: str) -> str:
+    """Quoted words are not evidence of their sender's attitude."""
+    text = re.sub(r'<blockquote\b[^>]*>.*?</blockquote>', '', text, flags=re.I | re.S)
+    text = re.sub(r'^\s*>.*$', '', text, flags=re.M)
+    return re.sub(r'«[^»]*»|“[^”]*”|"[^"\n]*"|`[^`]*`', '', text)
+
 RELATIONSHIP_STAGES = [
     (0, "Знакомые", "Сдержанное, вежливое, соблюдает границы"),
     (25, "Приятели", "Неформальное, лёгкое, первые подколы и шутки"),
@@ -82,6 +90,8 @@ class EmotionalState:
     warmth: int = 55  # Dynamic warmth/coldness level: 0 to 100
     hurt: int = 0
     hurt_reason: str = ""
+    apology_attempts: int = 0
+    last_repair_ts: float = 0
     positive_interactions: int = 0
     last_bond_gain_ts: float = 0
     total_interactions: int = 0
@@ -180,6 +190,68 @@ class EmotionalEngine:
             state.warmth = min(state.warmth, 25 if state.hurt >= 20 else 45)
             state.mood = "cold" if state.hurt >= 20 else "pouty"
 
+    @staticmethod
+    def _insult(state: EmotionalState, evidence: str) -> None:
+        state.hurt = min(100, state.hurt + 40)
+        state.hurt_reason = evidence[:300]
+        state.apology_attempts = 0
+        state.last_repair_ts = 0
+        state.affinity = max(0, state.affinity - 5)
+        state.affection = max(0, state.affection - 15)
+        state.warmth = max(0, state.warmth - 30)
+        state.mood = 'cold'
+
+    @staticmethod
+    def _apology(state: EmotionalState, now: float) -> None:
+        if not state.hurt:
+            return
+        if not state.apology_attempts:
+            state.apology_attempts = 1
+            state.last_repair_ts = now
+        elif now - state.last_repair_ts >= 300:
+            state.apology_attempts += 1
+            state.last_repair_ts = now
+            state.hurt = max(0, state.hurt - 5)
+
+    def observe_attitude(self, user_id: int, *, kind: str, quote: str, key: str) -> bool:
+        """Apply a validated passive event once, without counting it as a dialogue."""
+        if kind not in {'insult', 'apology'}:
+            return False
+        state = self.get_state(user_id)
+        if any(item.startswith(key + ' ') for item in state.memories):
+            return False
+        if kind == 'insult':
+            self._insult(state, quote)
+        else:
+            self._apology(state, time.time())
+        state.memories = (state.memories + [f'{key} {kind}: {quote[:300]}'])[-50:]
+        self._hold_hurt(state)
+        self.save()
+        return True
+
+    def interaction_policy(self, user_id: int) -> str:
+        state = self.states.get(self._user_key(user_id))
+        context = (
+            f' Текущая обида к user_id={user_id}: {state.hurt}/100; '
+            f'шагов примирения: {state.apology_attempts}.'
+            if state and state.hurt else ''
+        )
+        return (
+            '\n[Выбор участия: упоминание и реплай НЕ обязывают отвечать. '
+            'Сама оцени текущий контекст и отношение именно к этому user_id. '
+            'Если предпочитаешь игнорировать провокацию, давление, повторный зов или оскорбление, '
+            'выдай <tg-silent/> САМЫМ ПЕРВЫМ тегом. Можно добавить только <tg-react emoji="..."/> '
+            'и <tg-mood .../>; никакого текста, стикера, RP, отправки сообщений инструментом '
+            'или объяснения молчания. Это успешное молчание, не ошибка. '
+            'Не подменяй молчание словами «ок», «да», «и что». '
+            'При накопленной обиде на повторный зов без извинения или давление обычно предпочитай молчание. '
+            'Первое извинение можно заметить реакцией или без ответа; примирение постепенное, '
+            'не один комплимент. Накопленная обида не исчезает из-за перезапуска или нового реплая. '
+            'Не ищи обиду в обычном вопросе, просьбе о поиске или слове «клумба» самом по себе. '
+            'Если решила помочь — отвечай по существу без наказания и стыжения. '
+            'Не требуй оплаты, унижения или доказательств преданности для примирения.' + context + ']'
+        )
+
     def can_choose_partner(self, user_id: int) -> bool:
         state = self.get_state(user_id)
         return (not self.relationship.get("partner_id") and not state.hurt
@@ -207,7 +279,7 @@ class EmotionalEngine:
         state.last_interaction_ts = now
         state.total_interactions += 1
 
-        text_lower = user_text.lower()
+        text_lower = own_words(user_text).lower()
 
         # Evaluate signals independently so praise or technical keywords never mask insults.
         has_insult = _contains_any(text_lower, _INSULT_WORDS)
@@ -218,12 +290,7 @@ class EmotionalEngine:
         has_tired = _contains_any(text_lower, _TIRED_WORDS)
 
         if has_insult:
-            state.hurt = min(100, state.hurt + 40)
-            state.hurt_reason = user_text[:160]
-            state.affinity = max(0, state.affinity - 5)
-            state.affection = max(0, state.affection - 15)
-            state.mood = "cold"
-            state.warmth = max(0, state.warmth - 30)
+            self._insult(state, own_words(user_text))
         elif has_pout:
             state.mood = "pouty"
             state.warmth = max(20, state.warmth - 10)
@@ -244,8 +311,8 @@ class EmotionalEngine:
         # Warm words can improve tone, but trust grows at most once per five minutes.
         if not has_insult:
             apology = _contains_any(text_lower, ("извини", "прости", "был неправ", "была неправа"))
-            if has_affection or apology:
-                state.hurt = max(0, state.hurt - (5 if apology else 2))
+            if apology:
+                self._apology(state, now)
             if has_affection and not state.hurt and now - state.last_bond_gain_ts >= 300:
                 state.affinity = min(200, state.affinity + 2)
                 state.positive_interactions += 1
@@ -318,6 +385,8 @@ class EmotionalEngine:
             delta is None or delta <= -20
         ):
             state.hurt = max(state.hurt, 40)
+            state.apology_attempts = 0
+            state.last_repair_ts = 0
             if not state.hurt_reason:
                 state.hurt_reason = "Конфликт отмечен моделью; точная причина — в истории диалога."
         self._hold_hurt(state)
@@ -363,7 +432,7 @@ class EmotionalEngine:
         elif state.warmth >= 40:
             warmth_instruction = "Сдержанный, слегка колючий или капризный тон (обида, «бебебе» или лёгкая дистанция)."
         else:
-            warmth_instruction = "Холодный, сухой, отстранённый тон, короткие или односложные ответы («ок.», «нет», «не имею понятия») без эмодзи и ласкательных слов."
+            warmth_instruction = "Сдержанный, отстранённый тон без ласкательных слов. Можно действительно промолчать через <tg-silent/>, а не отвечать односложно ради ответа."
 
         return (
             f"[Персональное состояние отношений с Telegram user_id={user_id}; "

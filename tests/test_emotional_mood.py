@@ -34,6 +34,34 @@ def test_teasing_triggers_pouty_mood(tmp_path) -> None:
     assert state.warmth < 96
 
 
+@pytest.mark.parametrize('text', ['он сказал «ты дура»', '> ты дура\nон грубит',
+                                 '<blockquote>ты дура</blockquote>', 'клумба привет',
+                                 'клумба найди информацию'])
+def test_quotes_and_benign_requests_do_not_create_hurt(tmp_path, text):
+    engine = EmotionalEngine(tmp_path / 'mood.json')
+    assert engine.update_from_input(42, text).hurt == 0
+
+
+def test_passive_apology_does_not_reset_hurt_or_count_as_dialogue(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(emotional.time, 'time', lambda: clock[0])
+    path = tmp_path / 'mood.json'
+    engine = EmotionalEngine(path)
+    engine.observe_attitude(42, kind='insult', quote='эта дура', key='social:-1:1')
+    engine.observe_attitude(42, kind='apology', quote='извини', key='social:-1:2')
+    assert engine.get_state(42).hurt == 40
+    assert engine.get_state(42).total_interactions == 0
+    engine = EmotionalEngine(path)
+    clock[0] += 301
+    engine.observe_attitude(42, kind='apology', quote='извини', key='social:-2:3')
+    assert engine.get_state(42).hurt == 35
+    assert engine.get_state(42).apology_attempts == 2
+    assert engine.observe_attitude(42, kind='apology', quote='извини', key='social:-2:3') is False
+    assert engine.get_state(42).hurt == 35
+    prompt = engine.format_prompt_context(42)
+    assert '<tg-silent/>' in prompt and 'короткие или односложные' not in prompt
+
+
 def test_apply_model_mood_adjusts_state_and_warmth(tmp_path) -> None:
     engine = EmotionalEngine(state_file=tmp_path / "emotional_state.json")
 

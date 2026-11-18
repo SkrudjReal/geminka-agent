@@ -112,3 +112,61 @@ async def test_waiter_cancellation_keeps_batch_and_different_chats_are_isolated(
     assert ["one", "two"] in seen and ["separate"] in seen
     assert not batches.pending
     await batches.close()
+
+
+async def test_failed_group_answer_is_addressed_to_its_requester(monkeypatch):
+    from app.bot.batching import PendingTurn
+
+    message = SimpleNamespace(from_user=SimpleNamespace(id=2, first_name='User'),
+                              chat=SimpleNamespace(id=-1001, type='supergroup'),
+                              message_id=41, is_topic_message=False, reply=AsyncMock(), answer=AsyncMock())
+    consumer = SimpleNamespace(stream_from_generator=AsyncMock(side_effect=RuntimeError('failed')))
+    monkeypatch.setattr(handlers, 'TelegramStreamConsumer', lambda **_: consumer)
+
+    @asynccontextmanager
+    async def typing(**kwargs):
+        yield
+
+    monkeypatch.setattr(handlers.ChatActionSender, 'typing', typing)
+    batch = PendingTurn(items=[(message, 0)])
+    await handlers._answer_batch(batch, SimpleNamespace(), SimpleNamespace())
+    message.reply.assert_awaited_once()
+    message.answer.assert_not_awaited()
+
+
+async def test_deliberate_silence_completes_batch_without_error_or_fake_style_delivery(tmp_path, monkeypatch):
+    from app.bot.batching import PendingTurn
+
+    store = StateStore(tmp_path / 'state.db')
+    memory = SQLiteMemory(tmp_path / 'memory.db', store=store)
+    client = AntigravityClient(store=store, contexts=ContextManager(store), memories=memory)
+    async def stream(*args, **kwargs):
+        yield '<tg-silent/>'
+    client._agy = SimpleNamespace(stream=stream, aclose=AsyncMock(), _sessions={})
+    monkeypatch.setattr(handlers, 'state_store', store)
+    monkeypatch.setattr(client, 'schedule_memory_summary', lambda _: None)
+
+    @asynccontextmanager
+    async def typing(**kwargs):
+        yield
+    monkeypatch.setattr(handlers.ChatActionSender, 'typing', typing)
+    async def prepare(message, bot, client):
+        return {'prompt': 'клумба', 'emotional_context': '', 'adaptive_context': '', 'user_emojis_context': '',
+                'memory_input': {'private': True, 'text': 'клумба', 'key': 'tg:42:1', 'chat_id': 42}}
+    monkeypatch.setattr(handlers, '_prepare_message', prepare)
+    message = SimpleNamespace(from_user=SimpleNamespace(id=42, first_name='User'),
+                              chat=SimpleNamespace(id=42, type='private'),
+                              message_id=1, is_topic_message=False, reply=AsyncMock(), answer=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock(), send_sticker=AsyncMock())
+    batch = PendingTurn(items=[(message, 0)])
+    await handlers._answer_batch(batch, bot, client)
+    assert batch.accepting is False
+    bot.send_message.assert_not_awaited()
+    bot.send_sticker.assert_not_awaited()
+    message.reply.assert_not_awaited()
+    message.answer.assert_not_awaited()
+    assert store.get_messages(42)[-1]['content'] == '<tg-silent/>'
+    with memory._connect() as db:
+        assert db.execute('SELECT count(*) FROM style_deliveries').fetchone()[0] == 0
+    await client.aclose()
+    memory.close()

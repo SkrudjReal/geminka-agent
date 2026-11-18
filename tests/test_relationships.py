@@ -36,7 +36,9 @@ def test_strangers_are_not_automatically_soulmates(tmp_path):
     assert not engine.relationship
 
 
-def test_hurt_survives_praise_reactions_model_tags_and_restart(tmp_path):
+def test_hurt_survives_praise_reactions_model_tags_and_restart(tmp_path, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(emotional.time, 'time', lambda: clock[0])
     path = tmp_path / "mood.json"
     engine = EmotionalEngine(path)
     other = asdict(engine.get_state(43))
@@ -52,6 +54,11 @@ def test_hurt_survives_praise_reactions_model_tags_and_restart(tmp_path):
     assert saved.get_state(42).hurt == state.hurt
     assert saved.get_state(42).hurt_reason == "ты шалава"
     for _ in range(20):
+        saved.update_from_input(42, "извини, был неправ")
+    assert saved.get_state(42).hurt == state.hurt
+    assert saved.get_state(42).apology_attempts == 1
+    for _ in range(20):
+        clock[0] += 301
         saved.update_from_input(42, "извини, был неправ")
     assert saved.get_state(42).hurt == 0
 

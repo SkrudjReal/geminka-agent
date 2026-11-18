@@ -16,6 +16,30 @@ from app.services.topics import topic_manager
 logger = logging.getLogger(__name__)
 
 
+def user_request(content):
+    if '[Текущий текст пользователя]:\n' in content:
+        content = content.rsplit('[Текущий текст пользователя]:\n', 1)[-1].strip()
+    elif '[Цитата сообщения от ' in content or content.startswith('[Текущий участник:'):
+        content = content.rsplit('\n', 1)[-1].strip()
+    stripped = topic_manager.strip_prefix(content)
+    return stripped if stripped is not None else content
+
+
+def information_request(text, plan=None, history=()):
+    if plan and plan.get('action') in {'web', 'history', 'statistics', 'search', 'profile'}:
+        return True
+    request = re.compile(r'^(?:поищи|найди|погугли|узнай|зар+ес+[её]рч\w*|саммари|суммари|перескаж|объясни|поясни|проанализируй|сравни|что такое|что известно|(?:я\s+)?хочу\s+найти)\b', re.I)
+    followup = re.compile(r'^(?:(?:(?:дай|давай|покажи)\s+)?(?:а\s+)?(?:чуть\s+)?(?:подробнее|поподробнее|полнее|больше|дальше|ещ[её]|продолжай)\b.*|ищи(?:\s+давай)?|проверь|не\s+там\s+искала|(?:что|ч[её])\s+думаешь|\d+\s*(?:штук|шт|пункт\w*)?)[.!?\s]*$', re.I)
+    if followup.fullmatch(text.strip()):
+        for row in reversed(history):
+            if row['role'] == 'user':
+                previous = user_request(row['content'])
+                if not followup.fullmatch(previous.strip()):
+                    return information_request(previous, explicit_plan(previous, None))
+        return False
+    return bool(request.search(text.strip()))
+
+
 def resolve_request(text, history):
     """Resolve short follow-ups from user requests only, not possibly invented answers."""
     text = re.sub(r'\b[mм][cс][pрп]\b', 'MCP', text, flags=re.I)
@@ -25,15 +49,7 @@ def resolve_request(text, history):
     for row in reversed(history):
         if row['role'] != 'user':
             continue
-        previous = row['content']
-        if '[Текущий текст пользователя]:\n' in previous:
-            previous = previous.rsplit('[Текущий текст пользователя]:\n', 1)[-1].strip()
-        elif '[Цитата сообщения от ' in previous or previous.startswith('[Текущий участник:'):
-            # Legacy stored wrappers had no explicit boundary; do not inherit an assistant quote.
-            previous = previous.rsplit('\n', 1)[-1].strip()
-        stripped = topic_manager.strip_prefix(previous)
-        if stripped is not None:
-            previous = stripped
+        previous = user_request(row['content'])
         previous = re.sub(r'\b[mм][cс][pрп]\b', 'MCP', previous, flags=re.I)
         if not followup.fullmatch(previous.strip()) and re.search(r'cve|уязвим|отч[её]т|mcp|мс[рп]|архив|статист|саммари', previous, re.I):
             return previous + '\n[Уточнение текущего запроса]: ' + text

@@ -51,6 +51,7 @@ THINK_OPEN_TAGS = ("<think>", "<thought>", "<reasoning>", "<THINKING>")
 STICKER_TAG_RE = re.compile(r"<tg-sticker\s+([^>]+)\s*/?>", re.IGNORECASE)
 REACT_TAG_RE = re.compile(r"<tg-react\s+([^>]+)\s*/?>", re.IGNORECASE)
 REPLY_TAG_RE = re.compile(r"<tg-reply(?:\s*/>|\s+[^>]*/>)", re.IGNORECASE)
+SILENT_TAG_RE = re.compile(r"<tg-silent\s*/>", re.IGNORECASE)
 RP_TAG_RE = re.compile(r"<tg-rp\s+([^>]+)\s*/?>", re.IGNORECASE)
 PHOTO_PAIR_TAG_RE = re.compile(r"<tg-send-photos\b([^>]*)>|<tg-photo-pair\s*/?>", re.IGNORECASE)
 CUSTOM_PHOTO_TAG_RE = re.compile(r"<tg-photo\s+([^>]+)\s*/?>", re.IGNORECASE)
@@ -523,8 +524,22 @@ INCOMPLETE_CONTROL_TAG_RE = re.compile(
 )
 
 
+def is_silent_output(text: str) -> bool:
+    return bool(SILENT_TAG_RE.match(text.lstrip()))
+
+
+def normalize_silent_output(text: str) -> str:
+    if not is_silent_output(text):
+        return text
+    outside_code = re.sub(r'```[\s\S]*?```|`[^`\n]*`', '', text)
+    return '<tg-silent/>' + ''.join(match.group(0) for match in re.finditer(
+        f'{REACT_TAG_RE.pattern}|{MOOD_TAG_RE.pattern}', outside_code, re.I))
+
+
 def strip_delivery_tags(text: str) -> str:
     """Remove model control tags and incomplete/half-typed control tags from Telegram-visible text."""
+    if is_silent_output(text):
+        return ''
     # Models sometimes return a second JSON escaping layer in ordinary text.
     text = (
         text.replace("\\\\r\\\\n", "\n")
@@ -540,6 +555,7 @@ def strip_delivery_tags(text: str) -> str:
         STICKER_TAG_RE,
         REACT_TAG_RE,
         REPLY_TAG_RE,
+        SILENT_TAG_RE,
         RP_TAG_RE,
         PHOTO_PAIR_TAG_RE,
         CUSTOM_PHOTO_TAG_RE,
@@ -622,6 +638,8 @@ class TelegramStreamConsumer:
         message_thread_id: Optional[int] = None,
         edit_interval: float = 0.8,
         cursor: str = " …",
+        target_username: str | None = None,
+        explicit_mentions: tuple[str, ...] = (),
     ):
         self.bot = bot
         self.allowed_emojis = None
@@ -629,6 +647,8 @@ class TelegramStreamConsumer:
         self.user_id = user_id
         self.target_message_id = target_message_id
         self.target_user_mention = target_user_mention
+        self.target_username = (target_username or '').lower()
+        self.explicit_mentions = {name.lower() for name in explicit_mentions}
         self.message_thread_id = message_thread_id
         self.edit_interval = edit_interval
         self.cursor = cursor
@@ -666,7 +686,7 @@ class TelegramStreamConsumer:
             try:
                 msg = await self.bot.send_message(
                     self.chat_id,
-                    plain_without_emoji(content),
+                    plain_without_emoji(html_content),
                     parse_mode=None,
                     message_thread_id=self.message_thread_id,
                     reply_parameters=reply_params,
@@ -715,7 +735,7 @@ class TelegramStreamConsumer:
                     await self.bot.edit_message_text(
                         chat_id=self.chat_id,
                         message_id=self.message_id,
-                        text=plain_without_emoji(content),
+                        text=plain_without_emoji(html_content),
                         parse_mode=None,
                     )
                 except Exception:
@@ -742,7 +762,15 @@ class TelegramStreamConsumer:
             from app.services.public_output import safe_public_text
 
             text = safe_public_text(text)
-        return md_to_telegram_html(self._emoji_policy(text))
+        rendered = md_to_telegram_html(self._emoji_policy(text))
+        if self.target_user_mention:
+            # Drop a mismatched opening vocative, not references/quotes about other participants.
+            address = re.match(r'^(?:<b>)?<a href="https://t\.me/([\w]+)\?profile">@[^<]+</a>(?:</b>)?,\s*'
+                               r'(?=(?:(?:опять|снова)\s+)?(?:ты|тебе|тебя|твой|твоя)\b)', rendered, re.I)
+            if (address and address[1].lower() != self.target_username
+                    and address[1].lower() not in self.explicit_mentions):
+                rendered = rendered[address.end():]
+        return rendered
 
     def _local_file(self, raw_path: str) -> Path | None:
         path = resolve_local_file(raw_path)
@@ -787,7 +815,7 @@ class TelegramStreamConsumer:
         """Iterates through token_generator, emitting live HTML-rendered edits, stickers, reactions, and RP actions."""
         await self._consume_live_tokens(token_generator)
 
-        final_raw = strip_think_tags(self.accumulated)
+        final_raw = normalize_silent_output(strip_think_tags(self.accumulated))
 
         # Check if reply tag is present
         if REPLY_TAG_RE.search(final_raw):
@@ -882,7 +910,7 @@ class TelegramStreamConsumer:
                 except Exception:
                     sent = await self.bot.send_message(
                         self.chat_id,
-                        chunks[0],
+                        plain_without_emoji(html_text),
                         parse_mode=None,
                         message_thread_id=self.message_thread_id,
                         reply_parameters=reply_params,
@@ -894,17 +922,18 @@ class TelegramStreamConsumer:
             else:
                 await self._safe_edit(chunks[0], finalize=True)
             for chunk in chunks[1:]:
+                html_chunk = self._format_html(chunk)
                 try:
                     sent = await self.bot.send_message(
                         self.chat_id,
-                        self._format_html(chunk),
+                        html_chunk,
                         parse_mode=ParseMode.HTML,
                         message_thread_id=self.message_thread_id,
                     )
                 except TelegramBadRequest:
                     sent = await self.bot.send_message(
                         self.chat_id,
-                        chunk,
+                        plain_without_emoji(html_chunk),
                         parse_mode=None,
                         message_thread_id=self.message_thread_id,
                     )
@@ -1053,6 +1082,8 @@ class TelegramStreamConsumer:
                 logger.info(f"Successfully set reaction {reaction_obj} on message {self.target_message_id}")
             except Exception as e:
                 logger.warning(f"Failed to set initial reaction {reaction_obj}: {e}")
+                if is_silent_output(final_raw):
+                    return final_text
                 # Fallback to standard heart
                 try:
                     await self.bot.set_message_reaction(

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -21,6 +22,8 @@ def isolated(monkeypatch):
 def message(mid, thread=None, chat=-1001):
     return SimpleNamespace(
         message_id=mid, chat=SimpleNamespace(id=chat), message_thread_id=thread,
+        is_topic_message=thread is not None,
+        date=datetime(2026, 11, 18, 6, 25, tzinfo=timezone.utc),
         from_user=SimpleNamespace(id=42, full_name="Alice", username="alice"),
         reply_to_message=None, text=f"text-{mid}", caption=None,
     )
@@ -36,6 +39,7 @@ async def test_last_100_before_current_deduplicated_and_topic_local():
     data = json.loads(output.split("\n", 1)[1])
     assert data["preceding_count"] == 100
     assert [row["message_id"] for row in data["messages"]] == list(range(10, 110))
+    assert all(row['sent_at'] == '2026-11-18T06:25:00+00:00' for row in data['messages'])
     assert set(context._history) == {(-1001, None), (-1001, 7)}
 
 

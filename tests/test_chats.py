@@ -29,6 +29,7 @@ def message(text, *, user_id=2, chat_id=-100123, thread=None, caption=None):
         message_id=1, text=text, caption=caption,
         from_user=types.User(id=user_id, is_bot=False, first_name="User"),
         chat=types.Chat(id=chat_id, type="supergroup"), message_thread_id=thread,
+        is_topic_message=thread is not None,
     )
 
 

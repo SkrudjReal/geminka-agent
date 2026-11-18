@@ -13,7 +13,12 @@ from app.core import config
 from app.services.antigravity import AntigravityClient
 from app.services.emoji_output import premium_only_text
 from app.services.public_output import safe_public_text
-from app.services.streamer import md_to_telegram_html, strip_delivery_tags, strip_think_tags
+from app.services.streamer import (
+    is_silent_output,
+    md_to_telegram_html,
+    strip_delivery_tags,
+    strip_think_tags,
+)
 
 router = Router(name="guest")
 logger = logging.getLogger(__name__)
@@ -68,6 +73,7 @@ async def guest_message(message: types.Message, bot: Bot, antigravity_client: An
         except Exception:
             logger.warning("Guest generation failed; private details hidden")
             answer = "Не удалось ответить. Позови меня ещё раз через @username."
-        await bot.answer_guest_query(query_id, answer_article(answer))
+        if not is_silent_output(strip_think_tags(answer)):
+            await bot.answer_guest_query(query_id, answer_article(answer))
     finally:
         _busy.discard(user.id)

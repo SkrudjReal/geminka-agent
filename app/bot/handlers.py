@@ -33,8 +33,13 @@ from app.services.antigravity import AntigravityClient
 from app.services.harvester import asset_harvester
 from app.services.rag import MemoryRejected, rag_engine
 from app.services.sqlite_memory import MemoryWriteDisabled
-from app.services.streamer import TelegramStreamConsumer, md_to_telegram_html
-from app.services.topics import topic_manager
+from app.services.streamer import (
+    TelegramStreamConsumer,
+    is_silent_output,
+    md_to_telegram_html,
+    strip_think_tags,
+)
+from app.services.topics import message_topic_id, topic_manager
 
 logger = logging.getLogger("geminka-handlers")
 
@@ -262,7 +267,7 @@ async def process_set_reasoning(callback: types.CallbackQuery, antigravity_clien
 async def cmd_mood(message: types.Message, command: CommandObject | None = None):
     group_access = message.chat.type in {"group", "supergroup"} and (
         topic_manager.is_chat_active(message.chat.id)
-        or topic_manager.is_topic_active(message.chat.id, message.message_thread_id)
+        or topic_manager.is_topic_active(message.chat.id, message_topic_id(message))
     )
     if not check_auth(message.from_user.id) and not group_access:
         await message.answer("⛔ Доступ ограничен.")
@@ -988,7 +993,8 @@ async def _prepare_message(
         return
 
     debug_mode = state_store.is_debug_mode(message.from_user.id)
-    raw_user_content = await extract_message_context(message, bot, persist=not debug_mode)
+    images = []
+    raw_user_content = await extract_message_context(message, bot, persist=not debug_mode, images=images)
     if not raw_user_content:
         return
     if group:
@@ -1012,7 +1018,7 @@ async def _prepare_message(
 
     # 1. Check for Inbound RP Command
     user_text = message.text or message.caption or ""
-    if group and not topic_manager.is_topic_active(message.chat.id, message.message_thread_id):
+    if group and not topic_manager.is_topic_active(message.chat.id, message_topic_id(message)):
         stripped = topic_manager.strip_prefix(user_text)
         if stripped is not None:
             user_text = stripped
@@ -1059,7 +1065,8 @@ async def _prepare_message(
     if debug_mode:
         emotional_context = ""
     else:
-        emotion_input = user_text or (message.sticker.emoji if message.sticker and message.sticker.emoji else "")
+        emotion_input = (user_text or (message.sticker.emoji if message.sticker and message.sticker.emoji else "")) \
+            if not getattr(message, 'forward_origin', None) else ''
         emotion_engine.update_from_input(message.from_user.id, emotion_input)
         emotional_context = emotion_engine.format_prompt_context(message.from_user.id)
     emotional_context = "\n".join(part for part in (emotional_context, style_hint) if part)
@@ -1083,8 +1090,11 @@ async def _prepare_message(
         request_text = stripped
     original = message.reply_to_message
     # A bare invocation replying to your own request refers to that request, not idle chat.
-    if not request_text.strip() and original and original.from_user and original.from_user.id == message.from_user.id:
+    if (not request_text.strip() and stripped is not None and original and original.from_user
+            and original.from_user.id == message.from_user.id):
         request_text = original.text or original.caption or ""
+    if not request_text.strip() and message.content_type != 'text':
+        request_text = f'Пользователь прислал медиа ({message.content_type.value}). Реагируй на вложение, а не выполняй старую цитату.'
 
     return {
         "prompt": raw_user_content, "emotional_context": emotional_context,
@@ -1096,8 +1106,9 @@ async def _prepare_message(
             "key": f"tg:{message.chat.id}:{message.message_id}",
             "message_id": message.message_id,
             "date": message.date.isoformat(), "chat_id": message.chat.id,
-            "thread_id": message.message_thread_id, "media": str(message.content_type),
+            "thread_id": message_topic_id(message), "media": str(message.content_type),
             "name": message.from_user.full_name, "username": message.from_user.username or "",
+            "images": images,
             "debug": debug_mode,
         },
     }
@@ -1110,7 +1121,7 @@ async def handle_any_message(message: types.Message, bot: Bot, antigravity_clien
             return
     elif not message.from_user or not check_auth(message.from_user.id):
         return
-    key = (message.from_user.id, message.chat.id, message.message_thread_id)
+    key = (message.from_user.id, message.chat.id, message_topic_id(message))
     from app.bot.helpers import requests_transcript, send_transcript
 
     if requests_transcript(message):
@@ -1118,13 +1129,13 @@ async def handle_any_message(message: types.Message, bot: Bot, antigravity_clien
             await message.answer("В debug-режиме скачивание и распознавание голосовых отключены.")
             return
         async with user_locks.get(message.from_user.id), ChatActionSender.typing(
-            bot=bot, chat_id=message.chat.id, message_thread_id=message.message_thread_id,
+            bot=bot, chat_id=message.chat.id, message_thread_id=message_topic_id(message),
         ):
             try:
                 await send_transcript(message, bot)
             except Exception as exc:
                 logger.error("Direct transcription failed (%s)", type(exc).__name__)
-                await message.answer("Не удалось получить или отправить расшифровку голосового. Попробуй ещё раз.")
+                await message.answer("Не удалось получить или отправить расшифровку записи. Попробуй ещё раз.")
         return
     if message.chat.type in {"group", "supergroup"}:
         antigravity_client.group_memories.cancel(message.chat.id, message.from_user.id)
@@ -1143,11 +1154,13 @@ async def _answer_batch(batch: PendingTurn, bot: Bot, antigravity_client: Antigr
     consumer = TelegramStreamConsumer(
         bot=bot, chat_id=first.chat.id, user_id=user_id,
         target_message_id=first.message_id, target_user_mention=mention,
-        message_thread_id=first.message_thread_id, edit_interval=0.8,
+        target_username=getattr(first.from_user, 'username', None),
+        explicit_mentions=tuple(re.findall(r'@([A-Za-z0-9_]+)', getattr(first, 'text', None) or getattr(first, 'caption', None) or '')),
+        message_thread_id=message_topic_id(first), edit_interval=0.8,
     )
     try:
         async with user_locks.get(user_id), ChatActionSender.typing(
-            bot=bot, chat_id=first.chat.id, message_thread_id=first.message_thread_id,
+            bot=bot, chat_id=first.chat.id, message_thread_id=message_topic_id(first),
         ):
             async def tokens():
                 attempt = 0
@@ -1228,8 +1241,9 @@ async def _answer_batch(batch: PendingTurn, bot: Bot, antigravity_client: Antigr
                     logger.info("telegram batch_extended user=%s from=%d to=%d", user_id, revision, batch.revision)
 
             await consumer.stream_from_generator(tokens())
+            silent = is_silent_output(strip_think_tags(consumer.accumulated))
             if first.chat.type == "private":
-                if not state_store.is_debug_mode(user_id) and hasattr(antigravity_client.memories, "record_style_delivery"):
+                if not silent and not state_store.is_debug_mode(user_id) and hasattr(antigravity_client.memories, "record_style_delivery"):
                     try:
                         await asyncio.to_thread(antigravity_client.memories.record_style_delivery,
                                                 user_id, f"tg:{first.chat.id}:{first.message_id}:batch")
@@ -1238,9 +1252,10 @@ async def _answer_batch(batch: PendingTurn, bot: Bot, antigravity_client: Antigr
                 antigravity_client.schedule_memory_summary(user_id)
             elif not state_store.is_debug_mode(user_id):
                 antigravity_client.group_memories.schedule(first.chat.id, user_id)
-            logger.info("telegram delivered_ms=%.0f user=%s batch_size=%d",
+            logger.info("telegram %s_ms=%.0f user=%s batch_size=%d", 'silent' if silent else 'delivered',
                         (time.monotonic() - received_at) * 1000, user_id, batch.revision)
     except Exception:
         logger.exception("Error handling batch for user %s", user_id)
         batch.accepting = False
-        await first.answer("Не удалось завершить ответ. Напиши ещё раз, пожалуйста.", parse_mode=None)
+        await batch.items[-1][0].reply("Не удалось завершить ответ. Напиши ещё раз, пожалуйста.",
+                                       parse_mode=None, allow_sending_without_reply=True)

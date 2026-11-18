@@ -7,6 +7,47 @@ import pytest
 from app.services.agy_cli import AgyCliClient, AgyNoResponseError, _Session
 
 
+@pytest.mark.parametrize('outside', [False, True])
+async def test_native_image_pixels_are_attached_only_from_current_user_uploads(tmp_path, monkeypatch, outside):
+    import base64
+
+    from PIL import Image
+
+    from app.core import config
+
+    monkeypatch.setattr(config, 'DOWNLOADS_DIR', tmp_path)
+    directory = tmp_path / 'attachments' / '-1001' / '42'
+    directory.mkdir(parents=True)
+    path = (tmp_path if outside else directory) / 'first.png'
+    Image.new('RGB', (32, 32), 'red').save(path)
+    client = AgyCliClient()
+    client._catalog = ['gemini']
+    session = _Session(SimpleNamespace(returncode=None), 'gemini', 'low', asyncio.Lock(), conversation_id='unchanged')
+    async def get_session(*args):
+        return session
+    sent = []
+    async def send(session, prompt):
+        sent.append(prompt)
+        yield 'Красный кадр'
+    monkeypatch.setattr(client, '_get_session', get_session)
+    monkeypatch.setattr(client, '_send', send)
+    async def turn():
+        return [text async for text in client.stream(42, model='gemini', effort='low',
+            messages=[{'role':'system','content':'PERSONA'}, {'role':'user','content':'Видео'}],
+            tool_context={'requester_id':'42','chat_id':'-1001'}, images=[str(path)])]
+    if outside:
+        with pytest.raises(ValueError):
+            await turn()
+        assert sent == []
+    else:
+        assert await turn() == ['Красный кадр']
+        assert sent[0][0]['type'] == 'text'
+        assert sent[0][1]['type'] == 'image' and sent[0][1]['mimeType'] == 'image/png'
+        assert base64.b64decode(sent[0][1]['data']) == path.read_bytes()
+        assert await turn() == ['Красный кадр']
+        assert session.conversation_id == 'unchanged'
+
+
 @pytest.mark.parametrize("streamed", [False, True])
 async def test_result_only_response_is_delivered_without_replaying_deltas(streamed):
     reader = asyncio.StreamReader()
@@ -64,7 +105,8 @@ async def test_failed_capacity_result_keeps_safe_reason(reason):
 async def test_live_session_bootstrap_updates_and_fresh_memory(monkeypatch):
     client = AgyCliClient()
     client._catalog = ["gemini"]
-    session = _Session(SimpleNamespace(returncode=None), "gemini", "low", asyncio.Lock())
+    session = _Session(SimpleNamespace(returncode=None), "gemini", "low", asyncio.Lock(),
+                       conversation_id='same-conversation')
     sent = []
 
     async def get_session(*args):
@@ -95,9 +137,13 @@ async def test_live_session_bootstrap_updates_and_fresh_memory(monkeypatch):
     messages[0]["content"] = "UPDATED PERSONA"
     await turn("MEMORY THREE")
     assert "UPDATED PERSONA" in sent[2] and "OLD HISTORY" not in sent[2]
+    messages[0]['content'] = 'PERSONA CATALOG'
+    await turn('BACK TO COMPANION')
+    assert 'PERSONA CATALOG' in sent[3] and 'UPDATED PERSONA' not in sent[3]
+    assert session.conversation_id == 'same-conversation'
     session = _Session(SimpleNamespace(returncode=None), "gemini", "low", asyncio.Lock())
     await turn("MEMORY FOUR")
-    assert "UPDATED PERSONA" in sent[3] and "OLD HISTORY" in sent[3]
+    assert "PERSONA CATALOG" in sent[4] and "OLD HISTORY" in sent[4]
 
 
 async def test_group_context_cursor_committed_only_after_success_and_reset_with_session(monkeypatch):

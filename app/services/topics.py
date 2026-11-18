@@ -23,6 +23,11 @@ DEFAULT_PREFIXES = ["геминка", "клумба", "коломбина", "к�
 DECLINABLE_PREFIXES = set(DEFAULT_PREFIXES)
 
 
+def message_topic_id(message) -> int | None:
+    # Ordinary reply threads also have IDs; only forum-topic messages isolate context.
+    return message.message_thread_id if getattr(message, 'is_topic_message', False) else None
+
+
 class TopicManager:
     def __init__(self, storage_file: Path = TOPICS_FILE):
         self.storage_file = storage_file

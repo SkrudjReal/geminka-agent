@@ -8,7 +8,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import TelegramObject
 
 from app.core import config
-from app.services.topics import topic_manager
+from app.services.topics import message_topic_id, topic_manager
 
 logger = logging.getLogger("geminka-auth")
 
@@ -32,7 +32,7 @@ def group_message_allowed(message: types.Message, bot_id: int | None = None) -> 
     original = message.reply_to_message
     reply_to_bot = bool(bot_id and original and original.from_user and original.from_user.id == bot_id)
     return topic_manager.should_answer(
-        message.chat.id, message.message_thread_id, message.text or message.caption or "",
+        message.chat.id, message_topic_id(message), message.text or message.caption or "",
         reply_to_bot=reply_to_bot,
     )
 
@@ -103,7 +103,7 @@ class OwnerAuthMiddleware(BaseMiddleware):
                     await asyncio.to_thread(
                         client.group_memories.archive, event.chat.id, event.from_user.id,
                         event.text or event.caption or "[media]", key=f"tg:{event.chat.id}:{event.message_id}",
-                        telegram_date=event.date.isoformat(), thread_id=event.message_thread_id,
+                        telegram_date=event.date.isoformat(), thread_id=message_topic_id(event),
                     )
                     if not group_message_allowed(event, getattr(data.get("bot"), "id", None)):
                         client.group_memories.cancel(event.chat.id, event.from_user.id)
@@ -123,7 +123,7 @@ class OwnerAuthMiddleware(BaseMiddleware):
             if command in {"mood", "emotions", "relationship"}:
                 if owner or (event.chat.type in {"group", "supergroup"} and (
                     topic_manager.is_chat_active(event.chat.id)
-                    or topic_manager.is_topic_active(event.chat.id, event.message_thread_id)
+                    or topic_manager.is_topic_active(event.chat.id, message_topic_id(event))
                 )):
                     return await handler(event, data)
 

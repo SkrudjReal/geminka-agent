@@ -5,6 +5,25 @@ import pytest
 from app.services import retrieval
 
 
+@pytest.mark.parametrize('text,expected', [
+    ('привет', False), ('покажи себя', False), ('что ты думаешь обо мне', False),
+    ('поищи сведения о Microsoft MAI', True), ('объясни FTS5', True),
+    ('саммари кратко че там', True), ('зарресерч в интернете', True),
+])
+def test_information_mode_is_not_the_default_for_conversation(text, expected):
+    assert retrieval.information_request(text) is expected
+
+
+@pytest.mark.parametrize('followup', ['ищи давай', 'подробнее', '10 штук', 'че думаешь',
+                                      'дай чуть больше отчет и подробно', 'не там искала'])
+def test_information_followup_inherits_only_the_same_users_last_task(followup):
+    history = [{'role': 'user', 'content': '[Текущий текст пользователя]:\nклумба объясни FTS5'},
+               {'role': 'assistant', 'content': 'Old RP refusal must not define the mode'}]
+    assert retrieval.information_request(followup, history=history)
+    history.append({'role': 'user', 'content': '[Текущий текст пользователя]:\nпривет'})
+    assert not retrieval.information_request(followup, history=history)
+
+
 def response(data):
     return {'ok': True, 'result': {'structuredContent': data}}
 

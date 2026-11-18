@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from aiogram.types import Animation, Chat, Message, User, Voice
+from aiogram.types import Animation, Chat, Message, User, Video, Voice
 from PIL import Image
 
 from app.bot import helpers
@@ -35,6 +35,90 @@ async def test_real_telegram_mp4_middle_frame(tmp_path):
     with Image.open(destination) as image:
         r, g, b = image.convert("RGB").getpixel((16, 16))
     assert g > r and g > b
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='ffmpeg unavailable')
+async def test_real_video_first_frame_and_audio_extraction(tmp_path):
+    source = tmp_path / 'video.mp4'
+    await media.run_media('ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
+                          'color=c=red:s=32x32:d=1', '-f', 'lavfi', '-i', 'color=c=blue:s=32x32:d=1',
+                          '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+                          '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[v]', '-map', '[v]', '-map', '2:a',
+                          '-c:v', 'libx264', '-c:a', 'aac', '-threads', '1', str(source))
+    frame, audio = tmp_path / 'first.png', tmp_path / 'audio.ogg'
+    await media.first_frame(source, frame)
+    with Image.open(frame) as image:
+        r, g, b = image.convert('RGB').getpixel((16, 16))
+    assert r > g and r > b  # Not the blue midpoint.
+    assert await media.video_audio(source, audio)
+    from faster_whisper.audio import decode_audio
+    assert len(decode_audio(str(audio))) > 0
+    assert 1.9 < await media.duration(audio) < 2.2
+
+
+async def test_video_context_caches_frame_and_transcript_and_removes_sources(tmp_path, monkeypatch):
+    source = tmp_path / 'download.mp4'
+    source.write_bytes(b'video')
+    download = AsyncMock(return_value=source)
+    monkeypatch.setattr(helpers, 'download_telegram_file', download)
+    async def frame(_, path):
+        Image.new('RGB', (32, 32), 'red').save(path)
+    async def audio(_, path):
+        path.write_bytes(b'audio')
+        return True
+    monkeypatch.setattr(media, 'first_frame', frame)
+    monkeypatch.setattr(media, 'video_audio', audio)
+    transcribe = AsyncMock(return_value=('слова из ролика', 'Whisper'))
+    monkeypatch.setattr(media, 'transcribe', transcribe)
+    video = SimpleNamespace(file_id='file', file_unique_id='video', duration=2)
+    assert 'debug' in await media.media_context(None, video, directory=tmp_path, video=True, persist=False)
+    download.assert_not_awaited()
+    first = await media.media_context(None, video, directory=tmp_path, video=True)
+    assert first == await media.media_context(None, video, directory=tmp_path, video=True)
+    assert 'Первый кадр' in first and 'слова из ролика' in first
+    assert download.await_count == transcribe.await_count == 1
+    assert not source.exists() and not source.with_suffix('.audio.ogg').exists()
+    assert await media.full_transcript(None, video, tmp_path, video=True) == 'слова из ролика'
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='ffmpeg unavailable')
+async def test_no_audio_video_does_not_launch_whisper(tmp_path, monkeypatch):
+    source = tmp_path / 'silent.mp4'
+    await media.run_media('ffmpeg', '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
+                          'color=c=green:s=32x32:d=0.2', '-c:v', 'libx264', '-threads', '1', str(source))
+    monkeypatch.setattr(helpers, 'download_telegram_file', AsyncMock(return_value=source))
+    transcribe = AsyncMock(side_effect=AssertionError('No speech provider for a silent video'))
+    monkeypatch.setattr(media, 'transcribe', transcribe)
+    video = SimpleNamespace(file_id='file', file_unique_id='silent', duration=1)
+    result = await media.media_context(None, video, directory=tmp_path, video=True)
+    assert 'нет аудиодорожки' in result
+    transcribe.assert_not_awaited()
+
+
+@pytest.mark.parametrize('quoted', [False, True])
+async def test_video_reaches_prompt_with_current_identity_not_quoted_bot_recipient(monkeypatch, tmp_path, quoted):
+    user = User(id=42, is_bot=False, first_name='In-san')
+    bot = User(id=99, is_bot=True, first_name='Columbina')
+    chat = Chat(id=-1001, type='supergroup')
+    video = Video(file_id='file', file_unique_id='video', duration=2, width=32, height=32)
+    old = Message(message_id=1, date=0, chat=chat, from_user=bot, text='@other_owner, ты ошибаешься')
+    current = Message(message_id=2, date=0, chat=chat, from_user=user, video=video, reply_to_message=old)
+    if quoted:
+        current = Message(message_id=3, date=0, chat=chat, from_user=user, text='транскрибация', reply_to_message=current)
+    monkeypatch.setattr(helpers, 'media_context', AsyncMock(return_value='Видео: речь и кадр'))
+    monkeypatch.setattr(helpers, 'inspect_custom_emojis', AsyncMock(return_value=[]))
+    monkeypatch.setattr(helpers, 'attachment_directory', lambda *args: tmp_path)
+    import hashlib
+    frame = tmp_path / (hashlib.sha256(b'video').hexdigest() + '.first.png')
+    Image.new('RGB', (32, 32), 'red').save(frame)
+    images = []
+    result = await helpers.extract_message_context(current, None, images=images)
+    assert '"user_id": 42, "username": null, "name": "In-san"' in result
+    assert images == [str(frame)]
+    assert 'приложен к запросу напрямую' in result
+    assert helpers.media_context.call_args.kwargs['video'] is True
+    if quoted:
+        assert helpers.requests_transcript(current)
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg unavailable")

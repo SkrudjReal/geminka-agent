@@ -70,6 +70,14 @@ async def test_guest_uses_only_supplied_reply_context():
     assert identity['user_id'] == 11
 
 
+async def test_guest_can_choose_actual_silence_instead_of_ellipsis():
+    client = SimpleNamespace(inline_completion=AsyncMock(return_value='<tg-silent/>'))
+    bot = SimpleNamespace(answer_guest_query=AsyncMock())
+    await guest.guest_message(message(), bot, client)
+    bot.answer_guest_query.assert_not_awaited()
+    assert not guest._busy
+
+
 async def test_guest_uses_actual_caller_not_forwarded_sender():
     client = SimpleNamespace(inline_completion=AsyncMock(return_value='answer'))
     bot = SimpleNamespace(answer_guest_query=AsyncMock())
@@ -133,3 +141,21 @@ async def test_public_completion_uses_isolated_no_mcp_profile_and_no_history(mon
     assert 'user_id=11' in params['messages'][0]['content']
     assert 'только пример разметки' in params['messages'][0]['content']
     assert 'Use plain text only' not in params['messages'][0]['content']
+
+
+@pytest.mark.parametrize('mode', ['silent', 'acknowledge'])
+async def test_guest_participation_preserves_personal_distance_without_private_evidence(tmp_path, monkeypatch, mode):
+    from app.engines import emotional
+    from app.services.decisions import decisions
+
+    engine = emotional.EmotionalEngine(tmp_path / 'mood.json')
+    engine.update_from_input(42, 'ты дура')
+    monkeypatch.setattr(emotional, 'emotion_engine', engine)
+    choose = AsyncMock(return_value=mode)
+    monkeypatch.setattr(decisions, 'participation', choose)
+    client = AntigravityClient.__new__(AntigravityClient)
+    client._agy = SimpleNamespace(stream=AsyncMock())
+    assert await client.inline_completion(42, 'клумба') == '<tg-silent/>'
+    client._agy.stream.assert_not_called()
+    assert choose.call_args.kwargs['history'] == []
+    assert 'ты дура' not in str(choose.call_args)

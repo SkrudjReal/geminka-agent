@@ -8,6 +8,42 @@ from aiogram.types import Chat, Message, Sticker, User
 from app.bot import helpers
 
 
+async def test_reply_context_has_exact_message_dates_and_elapsed_seconds():
+    chat = Chat(id=123, type='private')
+    user = User(id=42, first_name='User', is_bot=False)
+    original = Message(message_id=10, date=datetime(2026, 11, 18, 5, 25, tzinfo=timezone.utc),
+                       chat=chat, from_user=user, text='Договорились')
+    current = Message(message_id=11, date=datetime(2026, 11, 18, 6, 25, tzinfo=timezone.utc),
+                      chat=chat, from_user=user, text='Час прошёл', reply_to_message=original)
+    result = await helpers.extract_message_context(current, SimpleNamespace())
+    assert '2026-11-18T05:25:00+00:00' in result
+    assert '2026-11-18T06:25:00+00:00' in result
+    assert '3600 секунд' in result
+    assert result.endswith('Час прошёл')
+
+
+@pytest.mark.parametrize('forum', [False, True])
+async def test_reply_thread_only_isolates_real_forum_topics(monkeypatch, forum):
+    from app.bot import handlers
+    from app.services.antigravity import AntigravityClient
+
+    message = Message(message_id=11, date=0, chat=Chat(id=-1001, type='supergroup'),
+                      from_user=User(id=42, first_name='User', is_bot=False),
+                      text='клумба ищи давай', message_thread_id=319514, is_topic_message=forum)
+    monkeypatch.setattr(handlers, 'state_store', SimpleNamespace(is_debug_mode=lambda _: True))
+    monkeypatch.setattr(handlers, 'group_message_allowed', lambda *_: True)
+    monkeypatch.setattr(handlers, 'extract_message_context', AsyncMock(return_value='ищи давай'))
+    monkeypatch.setattr(handlers.topic_manager, 'is_topic_active', lambda *_: False)
+    monkeypatch.setattr(handlers.topic_manager, 'strip_prefix', lambda value: value.removeprefix('клумба').strip())
+    monkeypatch.setattr(handlers.asset_harvester, 'format_emojis_prompt_context', lambda _: '')
+    prepared = await handlers._prepare_message(message, SimpleNamespace(id=99), None)
+    source = prepared['memory_input']
+    assert source['thread_id'] == (319514 if forum else None)
+    original = {**source, 'thread_id': None}
+    assert (AntigravityClient.conversation_scope(42, source)
+            == AntigravityClient.conversation_scope(42, original)) is (not forum)
+
+
 async def test_full_replied_post_keeps_tail_and_current_request():
     chat = Chat(id=123, type='private')
     user = User(id=456, is_bot=False, first_name='User')
@@ -18,6 +54,28 @@ async def test_full_replied_post_keeps_tail_and_current_request():
     context = await helpers.extract_message_context(message, SimpleNamespace())
     assert post in context
     assert context.endswith('саммари кратко че там')
+
+
+async def test_captionless_video_does_not_inherit_request_or_identity_from_quote(monkeypatch):
+    from aiogram.types import Video
+
+    from app.bot import handlers
+    from app.services.retrieval import explicit_plan
+
+    chat = Chat(id=-1001, type='supergroup')
+    user = User(id=42, first_name='In-san', is_bot=False)
+    quoted = Message(message_id=10, date=0, chat=chat, from_user=user,
+                     text='@other_owner сделай саммари чата по mcp')
+    message = Message(message_id=11, date=0, chat=chat, from_user=user, reply_to_message=quoted,
+                      video=Video(file_id='v', file_unique_id='v', width=32, height=32, duration=2))
+    monkeypatch.setattr(handlers, 'state_store', SimpleNamespace(is_debug_mode=lambda _: True))
+    monkeypatch.setattr(handlers, 'group_message_allowed', lambda *_: True)
+    monkeypatch.setattr(handlers, 'extract_message_context', AsyncMock(return_value='VIDEO'))
+    monkeypatch.setattr(handlers.asset_harvester, 'format_emojis_prompt_context', lambda _: '')
+    result = await handlers._prepare_message(message, SimpleNamespace(id=99), None)
+    assert 'медиа (video)' in result['memory_input']['request_text']
+    assert explicit_plan(result['memory_input']['request_text'], None) is None
+    assert result['memory_input']['name'] == 'In-san'
 
 
 @pytest.mark.parametrize('text,author,expected', [

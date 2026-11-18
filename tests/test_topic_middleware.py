@@ -8,6 +8,7 @@ def _group_message(thread_id: int | None) -> types.Message:
     return types.Message.model_construct(
         chat=types.Chat.model_construct(id=-1001234567890, type="supergroup"),
         message_thread_id=thread_id,
+        is_topic_message=thread_id is not None,
     )
 
 

@@ -232,6 +232,7 @@ class AgyCliClient:
         turn_context: str = "",
         tool_context: Mapping[str, str] | None = None,
         group_input: dict | None = None,
+        images: list[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Yield response deltas from one direct CLI turn."""
         if not self._catalog:
@@ -244,7 +245,24 @@ class AgyCliClient:
                 outgoing = [*outgoing[:-1], {
                     'role': 'system', 'content': '[CURRENT TURN CONTEXT — server state, replaces previous turn context]\n' + turn_context,
                 }, outgoing[-1]]
-            return format_messages(outgoing)
+            text = format_messages(outgoing)
+            if not images:
+                return text
+            import base64
+
+            from app.services.attachments import _attachment_path, attachment_directory
+
+            directory = attachment_directory(int(tool_context['requester_id']), int(tool_context['chat_id']))
+            parts = [{'type': 'text', 'text': text}]
+            for raw_path in dict.fromkeys(images):
+                path = _attachment_path(directory, Path(raw_path).name)
+                if (Path(raw_path).is_symlink() or path.resolve() != Path(raw_path).resolve()
+                        or path.suffix.lower() not in {'.png', '.jpg', '.jpeg'}
+                        or path.stat().st_size > 15 * 1024 * 1024):
+                    raise ValueError('Недопустимое изображение вложения.')
+                parts.append({'type': 'image', 'mimeType': 'image/png' if path.suffix.lower() == '.png' else 'image/jpeg',
+                              'data': base64.b64encode(path.read_bytes()).decode('ascii')})
+            return parts
         full_messages = [*messages[:-1], current]
         tool_context = tool_context or {}
         async def with_group_context(state):

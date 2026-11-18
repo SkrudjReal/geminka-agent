@@ -84,6 +84,79 @@ class _FileBot(_FakeBot):
         self.calls.append(kwargs)
 
 
+@pytest.mark.parametrize('text,username,explicit,expected', [
+    ('[@other_owner](https://t.me/other_owner?profile), опять ты со своим видео?', None, (), 'опять ты со своим видео?'),
+    ('[@other_owner](https://t.me/other_owner?profile), ты тут?', 'other_owner', (), '<a href='),
+    ('[@other_owner](https://t.me/other_owner?profile), ты тут?', None, ('other_owner',), '<a href='),
+    ('[@other_owner](https://t.me/other_owner?profile) прислал видео.', None, (), '<a href='),
+    ('<blockquote>[@other_owner](https://t.me/other_owner?profile), ты тут?</blockquote>', None, (), '<blockquote>'),
+])
+def test_wrong_opening_addressee_does_not_replace_author_of_video(text, username, explicit, expected):
+    consumer = TelegramStreamConsumer(_FakeBot(), -1001, user_id=42, target_user_mention='In-san',
+                                      target_username=username, explicit_mentions=explicit)
+    assert consumer._format_html(text).startswith(expected)
+
+
+async def test_wrong_addressee_stays_removed_when_html_delivery_fails():
+    class FallbackBot(_FakeBot):
+        def __init__(self):
+            super().__init__()
+            self.payloads = []
+
+        async def send_message(self, *args, **kwargs):
+            self.payloads.append(args[1])
+            if len(self.payloads) == 1:
+                raise ValueError('HTML failed')
+            return await super().send_message(*args, **kwargs)
+    bot = FallbackBot()
+    consumer = TelegramStreamConsumer(bot, -1001, user_id=42, target_user_mention='In-san')
+    async def tokens():
+        yield '[@other_owner](https://t.me/other_owner?profile), опять ты со своим видео?'
+    await consumer.stream_from_generator(tokens())
+    assert len(bot.payloads) == 2
+    assert all('other_owner' not in text for text in bot.payloads)
+
+
+@pytest.mark.parametrize('chat_id', [-1001, 42])
+@pytest.mark.parametrize('reaction', [False, True])
+async def test_silence_suppresses_text_rp_media_even_with_split_tag(tmp_path, monkeypatch, chat_id, reaction):
+    from unittest.mock import AsyncMock
+
+    from app.engines import emotional
+
+    engine = emotional.EmotionalEngine(tmp_path / 'mood.json')
+    monkeypatch.setattr(emotional, 'emotion_engine', engine)
+    bot = _FakeBot()
+    bot.set_message_reaction = AsyncMock()
+    consumer = TelegramStreamConsumer(bot, chat_id, user_id=42, target_message_id=41)
+
+    async def tokens():
+        yield '<tg-si'
+        yield 'lent/>Не должно быть видно даже в live-preview.'
+        yield '<tg-rp action="пнуть"/><tg-sticker file-id="forbidden"/><tg-send-photos/>'
+        yield '<tg-file path="somewhere"/><tg-mood state="cold" delta="-30"/>'
+        if reaction:
+            yield '<tg-react emoji="👍"/>'
+
+    assert await consumer.stream_from_generator(tokens()) == ''
+    assert bot.calls == []
+    assert engine.get_state(42).mood == 'cold'
+    assert bot.set_message_reaction.await_count == int(reaction)
+    assert strip_delivery_tags('<tg-silent/>скрыто') == ''
+
+
+async def test_failed_silent_reaction_does_not_send_affectionate_fallback():
+    from unittest.mock import AsyncMock
+
+    bot = _FakeBot()
+    bot.set_message_reaction = AsyncMock(side_effect=ValueError('unavailable reaction'))
+    async def tokens():
+        yield '<tg-silent/><tg-react emoji="👍"/>'
+    assert await TelegramStreamConsumer(bot, -1001, user_id=42, target_message_id=41).stream_from_generator(tokens()) == ''
+    assert not bot.calls
+    bot.set_message_reaction.assert_awaited_once()
+
+
 async def test_model_can_choose_reaction_and_rp_without_text(monkeypatch):
     from unittest.mock import AsyncMock
 

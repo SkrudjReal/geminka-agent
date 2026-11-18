@@ -8,8 +8,28 @@ from app.services.agy_acp import AgyAcpClient, _group_read_permission, _Peer, _V
 from app.services.agy_cli import AgyNoResponseError
 
 
-def test_provider_safety_diagnostics_are_hidden_at_every_chunk_boundary():
-    notice = ('⚠ Your previous response was blocked by content safety filters: The model output could not be generated. '
+@pytest.mark.parametrize('tail', ['Нормальный ответ', ''])
+@pytest.mark.parametrize('indent', ['', ' ', '\t', '\u00a0', '\ufeff '])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_provider_capacity_retries_hidden_across_all_chunk_boundaries(tail, indent, newline):
+    diagnostic = indent + 'API error (attempt 1): UNAVAILABLE (code 503): No capacity available for model example' + newline
+    source = diagnostic + '\n' + diagnostic.replace('attempt 1', 'attempt 2') + tail
+    for boundary in range(len(source) + 1):
+        visible = _VisibleOutput()
+        result = visible.feed(source[:boundary]) + visible.feed(source[boundary:]) + visible.finish()
+        assert result.strip() == tail
+    visible = _VisibleOutput()
+    assert (''.join(visible.feed(char) for char in source) + visible.finish()).strip() == tail
+    visible = _VisibleOutput()
+    assert visible.feed(diagnostic.rstrip()) + visible.finish() == ''
+    quoted = '```text\n' + diagnostic + '```'
+    visible = _VisibleOutput()
+    assert visible.feed(quoted) + visible.finish() == quoted
+
+
+@pytest.mark.parametrize('indent', ['', ' ', '\t'])
+def test_provider_safety_diagnostics_are_hidden_at_every_chunk_boundary(indent):
+    notice = (indent + '⚠ Your previous response was blocked by content safety filters: The model output could not be generated. '
               'This output contains sensitive words.\nPlease provide a compliant response.\nRetries remaining: 3\n')
     text = notice + notice.replace('3\n', '2\n') + 'Нет, такое не обсуждаю.'
     for boundary in range(len(text) + 1):
@@ -75,8 +95,9 @@ async def test_group_permission_only_allows_bridge_reads(name, kind, args, expec
 
 @pytest.mark.parametrize('warning', _VisibleOutput.warnings)
 @pytest.mark.parametrize('newline', ['\n', '\r\n'])
-def test_empty_step_warning_is_removed_at_every_chunk_boundary(warning, newline):
-    source = f'Начало\n{warning}{newline}Продолжение <b>ответа</b>'
+@pytest.mark.parametrize('indent', ['', ' ', '\t', '\u00a0'])
+def test_empty_step_warning_is_removed_at_every_chunk_boundary(warning, newline, indent):
+    source = f'Начало\n{indent}{warning}{newline}Продолжение <b>ответа</b>'
     for boundary in range(len(source) + 1):
         visible = _VisibleOutput()
         result = visible.feed(source[:boundary]) + visible.feed(source[boundary:]) + visible.finish()
@@ -89,13 +110,22 @@ def test_empty_step_warning_is_removed_at_every_chunk_boundary(warning, newline)
     '⚠ Model produced invalid output. Это цитата в строке.',
     '⚠ Model produced', '<code>⚠ Model produced invalid output.</code>',
     '```text\n⚠ Model produced invalid output.\n```',
+    '  Обычный ответ\n\tс отступами\n\n', ' \t',
+    '> API error (attempt 1): UNAVAILABLE (code 503)\n',
+    'Пример: API error (attempt 1): UNAVAILABLE (code 503)',
+    '  ```text\n API error (attempt 1): UNAVAILABLE (code 503)\n  ```',
 ])
 def test_unrelated_warnings_and_quoted_diagnostics_are_preserved(source):
     visible = _VisibleOutput()
     assert ''.join(visible.feed(char) for char in source) + visible.finish() == source
 
 
-async def test_recovered_warning_does_not_replay_prompt_or_tools(acp, monkeypatch):
+@pytest.mark.parametrize('chunks', [
+    ['⚠ Mo', 'del produced invalid output.', '\n', 'Готово'],
+    [' ', 'API error (attempt ', '1): UNAVAILABLE (code 503)\r\n',
+     '\tAPI error (attempt 2): UNAVAILABLE (code 503)', '\n', 'Готово'],
+])
+async def test_recovered_warning_does_not_replay_prompt_or_tools(acp, monkeypatch, chunks):
     client, calls, _ = acp
     session = await client._get_session(1, 'gemini-low', 'low', {'requester_id': 'summary'})
     peer = session.peer
@@ -104,7 +134,7 @@ async def test_recovered_warning_does_not_replay_prompt_or_tools(acp, monkeypatc
     async def call(method, params):
         if method == 'session/prompt':
             calls.append((peer.process, {'method': method}))
-            for chunk in ['⚠ Mo', 'del produced invalid output.', '\n', 'Готово']:
+            for chunk in chunks:
                 peer.streams[session.conversation_id].put_nowait(chunk)
             return {'stopReason': 'end_turn'}
         return await original(method, params)
@@ -118,7 +148,12 @@ async def test_recovered_warning_does_not_replay_prompt_or_tools(acp, monkeypatc
         await client.aclose()
 
 
-@pytest.mark.parametrize('warning', ['⚠ Model produced invalid output.', '\n⚠ Model produced invalid output.\n'])
+@pytest.mark.parametrize('warning', [
+    '⚠ Model produced invalid output.', '\n⚠ Model produced invalid output.\n',
+    ' ⚠ Model produced invalid output.',
+    ' API error (attempt 1): UNAVAILABLE (code 503)\n',
+    '\tAPI error (attempt 1): UNAVAILABLE (code 503)',
+])
 async def test_warning_only_turn_is_not_a_success_or_retryable(acp, monkeypatch, warning):
     client, _, _ = acp
     session = await client._get_session(1, 'gemini-low', 'low', {'requester_id': 'summary'})

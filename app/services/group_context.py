@@ -7,7 +7,7 @@ from collections import OrderedDict
 
 from app.services.collector_mcp import _request, collector_config
 from app.services.group_collector import scoped_arguments, scoped_result
-from app.services.topics import topic_manager
+from app.services.topics import message_topic_id, topic_manager
 
 # shortcut: history observed since startup; collector fills gaps when available.
 _history = OrderedDict()
@@ -17,7 +17,7 @@ _profiles = OrderedDict()
 def observe(message):
     if not topic_manager.is_group_configured(message.chat.id):
         return
-    key = (message.chat.id, message.message_thread_id)
+    key = (message.chat.id, message_topic_id(message))
     rows = _history.setdefault(key, {})
     user = message.from_user
     reply = message.reply_to_message
@@ -27,6 +27,7 @@ def observe(message):
         "name": user.full_name if user else "channel",
         "username": user.username if user else None,
         "reply_to_message_id": reply.message_id if reply else None,
+        "sent_at": message.date.isoformat(),
         "text": (message.text or message.caption or f"[{message.content_type}]")[:1500],
     }
     for old in sorted(rows)[:-101]:

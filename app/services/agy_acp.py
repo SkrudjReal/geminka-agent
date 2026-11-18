@@ -37,16 +37,23 @@ class _VisibleOutput:
     warnings = ("⚠ Model produced invalid output.", "⚠️ Model produced invalid output.")
     notices = ('⚠ Your previous response was blocked by content safety filters:',
                '⚠️ Your previous response was blocked by content safety filters:')
+    retry_notice = 'API error (attempt '
 
     def __init__(self):
         self.pending = ""
         self.line_start = True
         self.fenced_code = False
         self.provider_notice = False
+        self.provider_error = False
 
     def feed(self, text):
         output = []
         for char in text:
+            if self.provider_error:
+                if char == '\n':
+                    self.provider_error = False
+                    self.line_start = True
+                continue
             if self.provider_notice:
                 self.pending += char
                 if char == '\n':
@@ -60,23 +67,30 @@ class _VisibleOutput:
                 self.line_start = char == "\n"
                 continue
             self.pending += char
-            if not self.fenced_code and self.pending in self.notices:
+            # AGY may indent retry notices; retain whitespace for ordinary output.
+            candidate = self.pending.lstrip(' \t\u00a0\ufeff')
+            if not self.fenced_code and candidate == self.retry_notice:
+                self.provider_error = True
+                self.pending = ''
+                logger.warning('AGY provider retry diagnostic hidden from conversational output')
+                continue
+            if not self.fenced_code and candidate in self.notices:
                 self.provider_notice = True
                 self.pending = ''
                 logger.warning('Provider safety diagnostic hidden; safety policy remains enforced')
                 continue
-            if self.pending == "```":
+            if candidate == "```":
                 self.fenced_code = not self.fenced_code
                 output.append(self.pending)
                 self.pending = ""
                 self.line_start = False
-            elif "```".startswith(self.pending):
+            elif "```".startswith(candidate):
                 continue
-            elif not self.fenced_code and any(self.pending in (warning + "\n", warning + "\r\n") for warning in self.warnings):
+            elif not self.fenced_code and any(candidate in (warning + "\n", warning + "\r\n") for warning in self.warnings):
                 self.pending = ""
                 logger.warning("AGY reported an empty model step; awaiting completion of the same turn")
-            elif not self.fenced_code and any(warning.startswith(self.pending) or self.pending == warning + "\r"
-                                              for warning in (*self.warnings, *self.notices)):
+            elif not self.fenced_code and any(warning.startswith(candidate) or candidate == warning + "\r"
+                                              for warning in (*self.warnings, *self.notices, self.retry_notice)):
                 continue
             else:
                 output.append(self.pending)
@@ -89,7 +103,7 @@ class _VisibleOutput:
             self.pending = ''
             return ''
         pending, self.pending = self.pending, ""
-        if pending.rstrip("\r") in self.warnings:
+        if pending.lstrip(' \t\u00a0\ufeff').rstrip("\r") in self.warnings:
             logger.warning("AGY reported an empty model step without a visible response")
             return ""
         return pending
@@ -157,7 +171,9 @@ class _Peer:
                         # Tool titles/arguments may contain secrets; only record lifecycle metadata.
                         status = update.get('status')
                         safe_status = status if status in {'pending', 'in_progress', 'completed', 'failed'} else 'unknown'
-                        logger.info('agy tool_event phase=%s status=%s', update['sessionUpdate'], safe_status)
+                        kind = update.get('kind')
+                        safe_kind = kind if kind in {'read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'other'} else 'unknown'
+                        logger.info('agy tool_event phase=%s status=%s kind=%s', update['sessionUpdate'], safe_status, safe_kind)
                     if queue is not None and update.get("sessionUpdate") == "agent_message_chunk" and content.get("type") == "text":
                         queue.put_nowait(content.get("text", ""))
                 elif "id" in message:
@@ -350,6 +366,9 @@ class AgyAcpClient(AgyCliClient):
                 received = received or bool(tail.strip())
                 yield tail
             if result.get("stopReason") != "end_turn" or not received:
+                reason = result.get('stopReason')
+                safe_reason = reason if reason in {'end_turn', 'max_tokens', 'cancelled', 'refusal', 'max_turn_requests'} else 'unknown'
+                logger.warning('AGY turn incomplete reason=%s received_text=%s', safe_reason, received)
                 raise AgyNoResponseError("AGY ACP не завершил текстовый ответ; автоматический повтор отключён.")
         finally:
             peer.streams.pop(session_id, None)

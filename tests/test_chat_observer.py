@@ -19,6 +19,21 @@ def message(mid, chat=-1001, uid=42):
                    from_user=User(id=uid, first_name='Alice', is_bot=False), text=f'text {mid}')
 
 
+def test_date_migration_preserves_old_rows_and_marks_unknown_time(tmp_path):
+    job = make_job(tmp_path)
+    job.observe(message(1))
+    job.db.execute('ALTER TABLE messages DROP COLUMN sent_at')
+    job.db.commit()
+    job.db.close()
+    job = make_job(tmp_path)
+    row = job.db.execute('SELECT text,sent_at FROM messages WHERE message_id=1').fetchone()
+    assert row['text'] == 'text 1'
+    assert row['sent_at'] is None
+    job.observe(message(2))
+    assert job.db.execute('SELECT sent_at FROM messages WHERE message_id=2').fetchone()[0] == '1970-01-01T00:00:00+00:00'
+    job.db.close()
+
+
 def test_exact_batches_duplicate_and_chat_isolation(tmp_path):
     job = make_job(tmp_path)
     for mid in range(1, 20):
@@ -29,6 +44,7 @@ def test_exact_batches_duplicate_and_chat_isolation(tmp_path):
     job.observe(message(20))
     rows = job.claim()
     assert len(rows) == 20
+    assert all(row['sent_at'] == '1970-01-01T00:00:00+00:00' for row in rows)
     assert {r['chat_id'] for r in rows} == {-1001}
     assert job.claim() == []
     job.db.close()
@@ -129,7 +145,8 @@ async def test_no_generation_before_threshold_and_failed_send_not_retried(tmp_pa
 def test_topics_are_separate(tmp_path):
     job = make_job(tmp_path)
     for mid in range(1, 21):
-        job.observe(message(mid).model_copy(update={'message_thread_id': 1 if mid < 11 else 2}))
+        job.observe(message(mid).model_copy(update={'message_thread_id': 1 if mid < 11 else 2,
+                                                   'is_topic_message': True}))
     assert job.claim() == []
     job.db.close()
 
@@ -148,18 +165,94 @@ def test_addressed_messages_and_commands_do_not_count(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('decision', [0, None])
-async def test_local_memory_reaches_decision_without_starting_generator(tmp_path, monkeypatch, decision):
+async def test_silent_batch_still_assesses_attitude_once(tmp_path, monkeypatch, decision):
+    import json
+
     from app.services.decisions import decisions
 
     job = make_job(tmp_path)
     recall = Mock(return_value={'summary': 'Known participant', 'hits': [{'text': 'Earlier conversation'}]})
-    job.client = SimpleNamespace(group_memories=SimpleNamespace(recall=recall))
+    job.client = SimpleNamespace(group_memories=SimpleNamespace(recall=recall),
+                                 _agy=SimpleNamespace(command='unused'), get_user_model=lambda _: 'test')
+    calls = []
+
+    class Generator:
+        def __init__(self, **kwargs):
+            pass
+
+        async def stream(self, *args, **kwargs):
+            calls.append(kwargs)
+            yield '{"attitudes":[],"message_id":null,"text":""}'
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr('app.services.chat_observer.AgyCliClient', Generator)
     choose = AsyncMock(return_value=decision)
     monkeypatch.setattr(decisions, 'observer_target', choose)
     rows = [{'chat_id': -1001, 'user_id': uid, 'text': 'hello', 'eligible': 1, 'message_id': i}
             for i, uid in enumerate([42, 43, 42], 1)]
-    assert await job.generate(rows) == 'NO_REPLY'
+    assert json.loads(await job.generate(rows)) == {'attitudes': [], 'message_id': None, 'text': ''}
+    assert len(calls) == 1
+    assert 'Оцени только отношение' in calls[0]['messages'][0]['content']
     assert [call.args[:2] for call in recall.call_args_list] == [(-1001, 42), (-1001, 43)]
     assert [r['user_id'] for r in choose.call_args.kwargs['context']] == [42, 43]
     assert choose.call_args.kwargs['context'][0]['summary'] == 'Known participant'
+    await job.close()
+
+
+async def test_passive_attitude_is_personal_evidenced_persistent_and_idempotent(tmp_path, monkeypatch):
+    import json
+    from dataclasses import asdict
+
+    from app.engines.emotional import EmotionalEngine
+    from app.services.group_memory import GroupMemory
+
+    engine = EmotionalEngine(tmp_path / 'mood.json')
+    monkeypatch.setattr('app.services.chat_observer.emotion_engine', engine)
+    before = asdict(engine.get_state(43))
+    job = make_job(tmp_path)
+    memories = GroupMemory(None, root=tmp_path / 'groups', store=job.store)
+    job.client = SimpleNamespace(group_memories=memories)
+    for mid in range(1, 21):
+        event = message(mid, uid=42 if mid == 1 else 43)
+        if mid == 1:
+            event = event.model_copy(update={'text': 'скрудж платит чтобы эта дура отвечала ок'})
+        job.observe(event)
+    result = {'attitudes': [{'message_id': 1, 'user_id': 43, 'target': 'bot',
+                             'kind': 'insult', 'quote': 'эта дура'}], 'message_id': None, 'text': ''}
+    job.generate = AsyncMock(return_value=json.dumps(result))
+    assert await job.tick()
+    assert engine.get_state(42).hurt == 40
+    assert asdict(engine.get_state(43)) == before
+    job.bot.send_message.assert_not_awaited()
+    assert not await job.tick()
+    rows = [dict(row) for row in job.db.execute('SELECT * FROM messages')]
+    await job.remember_attitudes(result['attitudes'], rows)
+    assert engine.get_state(42).hurt == 40
+    assert EmotionalEngine(tmp_path / 'mood.json').get_state(42).hurt == 40
+    hits = memories.recall(-1001, 42, 'дура')['hits']
+    assert any(hit['kind'] == 'mood' and 'social:-1001:1' in hit['text'] for hit in hits)
+    assert memories.recall(-1001, 43, 'дура')['hits'] == []
+    await job.close()
+    await memories.close()
+
+
+async def test_passive_rejects_quoted_forwarded_fabricated_and_nonbot_events(tmp_path, monkeypatch):
+    from app.engines.emotional import EmotionalEngine
+
+    engine = EmotionalEngine(tmp_path / 'mood.json')
+    monkeypatch.setattr('app.services.chat_observer.emotion_engine', engine)
+    job = make_job(tmp_path)
+    archive = Mock(side_effect=AssertionError('Invalid evidence must not reach memory'))
+    job.client = SimpleNamespace(group_memories=SimpleNamespace(database=archive))
+    rows = [dict(message_id=i, chat_id=-1001, user_id=42, eligible=1, text=text, forwarded=int(i == 3))
+            for i, text in enumerate(['он написал «ты дура»', '> ты дура', 'ты дура',
+                                      'привет', 'ты дура', 'ты дура'], 1)]
+    events = [dict(message_id=i, target='other' if i == 5 else 'bot', kind='insult', quote='ты дура')
+              for i in range(1, 7)]
+    rows[-1]['eligible'] = 0
+    await job.remember_attitudes(events + [None, {'message_id': True}], rows)
+    archive.assert_not_called()
+    assert not engine.states
     await job.close()
