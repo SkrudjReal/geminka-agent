@@ -36,6 +36,7 @@ from aiogram.types import (
 
 from app.bot.batching import StreamRestart
 from app.core import config
+from app.services.emoji_output import plain_without_emoji
 from app.services.harvester import asset_harvester
 from app.services.sqlite_memory import memory as personal_memory
 
@@ -641,7 +642,7 @@ class TelegramStreamConsumer:
     async def _safe_send_initial(self, text: str) -> bool:
         """Sends the initial preview message."""
         preview = text if len(text) <= 3_500 else "…\n" + text[-3_498:]
-        content = self._emoji_policy((preview + self.cursor).strip() or self.cursor)
+        content = self._emoji_policy((preview + self.cursor).strip() or self.cursor) or '…'
         html_content = self._format_html(content)
         reply_params = (
             ReplyParameters(message_id=self.target_message_id)
@@ -665,7 +666,7 @@ class TelegramStreamConsumer:
             try:
                 msg = await self.bot.send_message(
                     self.chat_id,
-                    content,
+                    plain_without_emoji(content),
                     parse_mode=None,
                     message_thread_id=self.message_thread_id,
                     reply_parameters=reply_params,
@@ -688,7 +689,7 @@ class TelegramStreamConsumer:
             return
 
         preview = clean_text if len(clean_text) <= 3_500 else "…\n" + clean_text[-3_498:]
-        content = self._emoji_policy(preview if finalize else (preview + self.cursor))
+        content = self._emoji_policy(preview if finalize else (preview + self.cursor)) or '…'
         if content == self.last_sent_text and not finalize:
             return
 
@@ -714,7 +715,7 @@ class TelegramStreamConsumer:
                     await self.bot.edit_message_text(
                         chat_id=self.chat_id,
                         message_id=self.message_id,
-                        text=content,
+                        text=plain_without_emoji(content),
                         parse_mode=None,
                     )
                 except Exception:
@@ -725,22 +726,16 @@ class TelegramStreamConsumer:
             logger.debug(f"Unhandled edit error: {e}")
 
     def _emoji_policy(self, text: str) -> str:
-        from app.services.personalization import allowed_emoji_ids
+        from app.services.emoji_output import premium_only_text
+        from app.services.harvester import load_default_emojis
 
         if self.allowed_emojis is None:
-            self.allowed_emojis = allowed_emoji_ids(self.user_id or 0, personal_memory,
-                                                   self.chat_id == self.user_id)
-        def replace(match):
-            attributes = html.unescape(match.group(1))
-            identity = re.search(r'\bemoji-id\s*=\s*(?:"(\d+)"|\'(\d+)\'|(\d+))', attributes, re.I)
-            cid = next((part for part in identity.groups() if part), None) if identity else None
-            return f'<tg-emoji emoji-id="{cid}">{match.group(2)}</tg-emoji>' if cid in self.allowed_emojis else match.group(2)
-
-        # Literal tag examples in code are escaped by the renderer, not displayed as emoji.
-        parts = re.split(r"(```[\s\S]*?```|`[^`\n]*`)", text)
-        return "".join(part if index % 2 else re.sub(r'<tg-emoji\b([^>]*)>(.*?)</tg-emoji>',
-                                                   replace, part, flags=re.DOTALL | re.IGNORECASE)
-                       for index, part in enumerate(parts))
+            self.emoji_catalog = load_default_emojis()
+            if self.user_id and self.chat_id == self.user_id:
+                self.emoji_catalog += [item for item in personal_memory.style_assets(self.user_id)
+                                       if item['type'] == 'emoji']
+            self.allowed_emojis = {str(item['custom_emoji_id']) for item in self.emoji_catalog}
+        return premium_only_text(text, catalog=self.emoji_catalog)
 
     def _format_html(self, text: str) -> str:
         if self.chat_id < 0:

@@ -39,6 +39,9 @@ async def test_owner_can_call_public_bot_method(monkeypatch):
 @pytest.mark.asyncio
 async def test_owner_call_removes_double_json_escaping_from_html_text(monkeypatch):
     monkeypatch.setattr(config, "settings", replace(config.settings, owner_user_id=42))
+    monkeypatch.setattr('app.services.emoji_output.load_default_emojis', lambda: [
+        {'custom_emoji_id': '527', 'emoji': '🫣'},
+    ])
     bot = FakeBot()
 
     await call_bot_api(
@@ -49,6 +52,16 @@ async def test_owner_call_removes_double_json_escaping_from_html_text(monkeypatc
     )
 
     assert bot.calls == [(100, '<tg-emoji emoji-id="527">🫣</tg-emoji>\nnext')]
+
+
+async def test_bot_api_converts_known_plain_emoji_and_drops_unknown(monkeypatch):
+    monkeypatch.setattr(config, 'settings', replace(config.settings, owner_user_id=42))
+    monkeypatch.setattr('app.services.emoji_output.load_default_emojis', lambda: [
+        {'custom_emoji_id': '111', 'emoji': '😉'},
+    ])
+    bot = FakeBot()
+    await call_bot_api(bot, method='send_message', params={'chat_id': 100, 'text': 'Привет 😉🌟'}, requester_id=42)
+    assert bot.calls == [(100, 'Привет <tg-emoji emoji-id="111">😉</tg-emoji>')]
 
 
 @pytest.mark.asyncio

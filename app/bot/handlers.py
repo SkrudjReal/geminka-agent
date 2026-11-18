@@ -1187,7 +1187,7 @@ async def _answer_batch(batch: PendingTurn, bot: Bot, antigravity_client: Antigr
                         + "\n\n".join(f"[Сообщение {i}]\n{item['prompt']}" for i, item in enumerate(prepared, 1))
                     )
                     if len(prompt) > config.settings.max_input_chars:
-                        header = "[Длинная серия: начало есть в живой сессии; ниже последние уточнения.]\n"
+                        header = "[Длинная серия: начало пропущено из-за лимита. Не утверждай, что прочитала весь материал.]\n"
                         prompt = header + prompt[-(config.settings.max_input_chars - len(header)):]
                     if attempt:
                         yield STREAM_RESTART

@@ -223,8 +223,10 @@ class DailyChat:
                     atomic_write_json(self.path, self.state)
                     continue
                 if text:
+                    from app.services.emoji_output import premium_only_text
+
                     message = await self.bot.send_message(chat_id=chat_id, message_thread_id=thread_id,
-                                                          text=text["text"], reply_parameters=text["reply_parameters"],
+                                                          text=premium_only_text(text["text"]), reply_parameters=text["reply_parameters"],
                                                           parse_mode="HTML")
                     entry.update(status="sent", message_id=message.message_id)
                 else:

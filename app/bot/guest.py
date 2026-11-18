@@ -11,6 +11,7 @@ from aiogram import Bot, Router, types
 
 from app.core import config
 from app.services.antigravity import AntigravityClient
+from app.services.emoji_output import premium_only_text
 from app.services.public_output import safe_public_text
 from app.services.streamer import md_to_telegram_html, strip_delivery_tags, strip_think_tags
 
@@ -25,7 +26,7 @@ def answer_article(text: str) -> types.InlineQueryResultArticle:
     return types.InlineQueryResultArticle(
         id=secrets.token_urlsafe(16), title="🌸 Ответ Геминки", description=text[:150],
         input_message_content=types.InputTextMessageContent(
-            message_text=md_to_telegram_html(safe_public_text(strip_delivery_tags(strip_think_tags(text)))),
+            message_text=md_to_telegram_html(premium_only_text(safe_public_text(strip_delivery_tags(strip_think_tags(text))))) or '…',
             parse_mode="HTML",
             link_preview_options=types.LinkPreviewOptions(is_disabled=True),
         ),

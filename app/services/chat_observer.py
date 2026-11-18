@@ -11,6 +11,7 @@ from aiogram.types import ReplyParameters
 from app.core import config
 from app.core.state import state_store
 from app.services.agy_acp import AgyAcpClient as AgyCliClient
+from app.services.emoji_output import premium_only_text
 from app.services.topics import topic_manager
 
 logger = logging.getLogger(__name__)
@@ -119,8 +120,11 @@ class ChatObserver:
                 raise ValueError('Invalid observer reply')
             if not self.enabled(chat_id, thread_id) or self.store.is_debug_mode(target['user_id']):
                 return True
+            rendered = premium_only_text(escape(text.strip()))
+            if not rendered.strip():
+                return True
             sent = await self.bot.send_message(
-                chat_id, escape(text.strip()), parse_mode='HTML', message_thread_id=thread_id,
+                chat_id, rendered, parse_mode='HTML', message_thread_id=thread_id,
                 reply_parameters=ReplyParameters(message_id=target['message_id'], allow_sending_without_reply=False))
             logger.info('Observer reply chat=%s target=%s sent=%s', chat_id, target['message_id'], sent.message_id)
         except Exception as exc:

@@ -103,6 +103,17 @@ def test_explicit_archive_requests_override_uncertain_router_and_followups():
     assert retrieval.resolve_request('привет', []) == 'привет'
 
 
+@pytest.mark.parametrize('text', ['саммари кратко че там', 'перескаж этот пост', 'че думаешь', 'зарресерч в интернете'])
+def test_dialogue_does_not_request_archive(text):
+    assert retrieval.explicit_plan(text, None) is None
+
+
+@pytest.mark.parametrize('text', ['саммари последних 1000 сообщений', 'последние 1000 сообщений',
+                                  'сделай саммари чата', 'топ участников'])
+def test_explicit_archive_needs_no_classifier(text):
+    assert retrieval.explicit_plan(text, None)['source'] == 'mcp'
+
+
 @pytest.mark.parametrize('clarification', ['по мср', 'по mcp имеется ввиду', 'через MCP'])
 def test_mcp_source_correction_keeps_user_task_not_quoted_assistant(clarification):
     original = 'дай отчет по найденным cve вчера сегодня самые опасные через keenable'

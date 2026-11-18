@@ -66,6 +66,13 @@ async def call_bot_api(
         raise BotApiCallError(f"Публичный метод aiogram не найден: {method!r}")
 
     call_params = _normalize_json_strings(dict(params or {}))
+    if call_params.get('parse_mode', 'HTML') == 'HTML':
+        from app.services.emoji_output import premium_only_text
+
+        for field, entities in (('text', 'entities'), ('caption', 'caption_entities')):
+            if isinstance(call_params.get(field), str) and not call_params.get(entities):
+                rendered = premium_only_text(call_params[field])
+                call_params[field] = rendered or ('…' if field == 'text' and call_params[field] else '')
     if method == "send_sticker" and isinstance(call_params.get("sticker"), str):
         from app.services.sticker_policy import check_delivery
 

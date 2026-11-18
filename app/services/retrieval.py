@@ -50,11 +50,13 @@ def requested_source(text):
 
 def explicit_plan(text, plan):
     """Classifier uncertainty cannot turn an explicit archive report into idle chat."""
+    if re.search(r'\b(?:что|че|ч[её])\s+думаешь|как тебе|тво[её]\s+мнение', text, re.I):
+        return plan
     action = None
     if (re.search(r'отч[её]т|вс[еёяю].*инф|активност|статист', text, re.I)
             and re.search(r'про меня|обо мне|мо(?:я|ю|ей|[её])\b|@\w+', text, re.I)):
         action = 'profile'
-    elif re.search(r'саммари|сводк.*\d+.*сообщ|перескаж.*сообщ', text, re.I):
+    elif re.search(r'(?:саммари|сводк|перескаж|обсуждал).*?(?:\d+\s*(?:к|k|тыс\w*)?\s*сообщ|чат|групп|архив|\bMCP\b)|последн\w*\s+\d+\s*(?:к|k|тыс\w*)?\s*сообщ', text, re.I):
         action = 'history'
     elif re.search(r'cve|уязвим|(?:найди|ищи|поищи|глянь|посмотр).*\b(?:mcp|мс[рп]|архив)', text, re.I):
         action = 'search'

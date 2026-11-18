@@ -84,6 +84,46 @@ class _FileBot(_FakeBot):
         self.calls.append(kwargs)
 
 
+async def test_model_can_choose_reaction_and_rp_without_text(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.engines import rp
+
+    bot = _FakeBot()
+    bot.set_message_reaction = AsyncMock()
+    monkeypatch.setattr(rp, 'can_reciprocate_rp', lambda *_: True)
+    monkeypatch.setattr(rp, 'get_random_rp_phrase', lambda *_: 'Подмигнула собеседнику')
+    consumer = TelegramStreamConsumer(bot=bot, chat_id=-1001234567890,
+                                      user_id=10001, target_message_id=41)
+
+    async def tokens():
+        yield '<tg-react emoji="👍"/><tg-rp action="подмигнуть"/>'
+
+    assert await consumer.stream_from_generator(tokens()) == ''
+    bot.set_message_reaction.assert_awaited_once()
+    assert bot.set_message_reaction.call_args.kwargs['message_id'] == 41
+    assert len(bot.calls) == 1
+    assert bot.calls[0]['reply_parameters'].message_id == 41
+
+
+@pytest.mark.parametrize('reply', [False, True])
+async def test_group_reply_is_chosen_by_model_tag_even_in_late_chunk(reply):
+    bot = _FakeBot()
+    consumer = TelegramStreamConsumer(bot=bot, chat_id=-1001234567890,
+                                      user_id=10001, target_message_id=41)
+
+    async def tokens():
+        yield 'Обычная беседа, не код и не файл.'
+        if reply:
+            yield '<tg-re'
+            yield 'ply/>'
+
+    await consumer.stream_from_generator(tokens())
+    assert len(bot.calls) == 1
+    params = bot.calls[0]['reply_parameters']
+    assert (params.message_id if params else None) == (41 if reply else None)
+
+
 @pytest.mark.asyncio
 async def test_final_stream_message_keeps_forum_thread_id() -> None:
     bot = _FakeBot()

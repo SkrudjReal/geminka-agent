@@ -10,14 +10,18 @@ from app.services.decisions import decisions
 from app.services.sqlite_memory import SQLiteMemory
 
 
-@pytest.mark.parametrize('action,source,private,uid,expected', [
-    ('chat', 'none', False, 2, False),
-    ('history', 'mcp', False, 2, True),
-    ('statistics', 'mcp', True, 1, True),
-    ('search', 'mcp', True, 2, False),
+@pytest.mark.parametrize('query,private,uid,expected', [
+    ('привет', False, 2, False),
+    ('саммари последних 1000 сообщений', False, 2, True),
+    ('топ участников', True, 1, True),
+    ('найди через MCP', True, 2, False),
+    ('саммари кратко че там', False, 2, False),
+    ('че думаешь', False, 2, False),
+    ('че думаешь об этой cve', False, 2, False),
+    ('зарресерч в интернете', False, 2, False),
 ])
 async def test_route_only_changes_retrieval_not_model_or_permissions(tmp_path, monkeypatch,
-                                                                   action, source, private, uid, expected):
+                                                                   query, private, uid, expected):
     from app.services import group_collector, retrieval
 
     monkeypatch.setattr(config, 'settings', config.Settings.from_env({'TELEGRAM_OWNER_ID': '1'}))
@@ -25,7 +29,8 @@ async def test_route_only_changes_retrieval_not_model_or_permissions(tmp_path, m
     memory = SQLiteMemory(tmp_path / 'memory.db', store=state)
     client = AntigravityClient(store=state, contexts=ContextManager(state), memories=memory)
     client.group_memories.root = tmp_path / 'groups'
-    monkeypatch.setattr(decisions, 'route', AsyncMock(return_value={'action': action, 'source': source, 'detail': 'short'}))
+    router = AsyncMock(side_effect=AssertionError('Luna must not route dialogue'))
+    monkeypatch.setattr(decisions, 'route', router)
     prefetch = AsyncMock(return_value='ARCHIVE EVIDENCE')
     monkeypatch.setattr(retrieval, 'retrieve', prefetch)
     monkeypatch.setattr(group_collector.GroupCollectorBroker, 'credentials', AsyncMock(return_value={}))
@@ -35,11 +40,12 @@ async def test_route_only_changes_retrieval_not_model_or_permissions(tmp_path, m
         yield 'Ответ'
     client._agy.stream = stream
     selected = client.get_user_model(uid if private else 1)
-    assert [chunk async for chunk in client.generate_stream(uid, 'привет', memory_input={
+    assert [chunk async for chunk in client.generate_stream(uid, query, memory_input={
         'private': private, 'chat_id': uid if private else -1001,
-        'message_id': 2, 'text': 'привет', 'date': '2026-11-18T12:00:00Z',
+        'message_id': 2, 'text': query, 'date': '2026-11-18T12:00:00Z',
     })] == ['Ответ']
     assert prefetch.await_count == int(expected)
+    router.assert_not_awaited()
     assert seen[0]['model'] == selected
     assert ('ARCHIVE EVIDENCE' in seen[0]['turn_context']) is expected
     assert (PRIVATE_RESPONSE_RULES in seen[0]['turn_context']) is private

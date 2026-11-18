@@ -8,6 +8,18 @@ from aiogram.types import Chat, Message, Sticker, User
 from app.bot import helpers
 
 
+async def test_full_replied_post_keeps_tail_and_current_request():
+    chat = Chat(id=123, type='private')
+    user = User(id=456, is_bot=False, first_name='User')
+    post = 'Microsoft MAI ' + 'material ' * 800 + 'IMPORTANT_POST_TAIL'
+    quoted = Message(message_id=10, date=0, chat=chat, from_user=user, text=post)
+    message = Message(message_id=11, date=0, chat=chat, from_user=user,
+                      text='саммари кратко че там', reply_to_message=quoted)
+    context = await helpers.extract_message_context(message, SimpleNamespace())
+    assert post in context
+    assert context.endswith('саммари кратко че там')
+
+
 @pytest.mark.parametrize('text,author,expected', [
     ('клумба', 42, 'дай отчет по найденным cve вчера сегодня самые опасные'),
     ('клумба', 43, ''),
