@@ -384,5 +384,5 @@ async def extract_message_context(
             )
 
     if text := (message.text or message.caption or "").strip():
-        parts.append(text)
+        parts.append('[Текущий текст пользователя]:\n' + text)
     return "\n".join(parts)[: config.settings.max_input_chars].strip()

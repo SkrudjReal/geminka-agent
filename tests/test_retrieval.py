@@ -65,7 +65,8 @@ async def test_large_summary_uses_all_blocks_no_silent_truncation(scope, monkeyp
 
 async def test_normal_history_skips_background_summary_queue(scope, monkeypatch):
     rows = [{'chat_id': -1001, 'topic_id': 7, 'message_id': i, 'text': 'important detail ' * 5,
-             'media': {'transport_metadata': 'x' * 5000}, 'reply_to_message_id': i - 1}
+             'media': {'transport_metadata': 'x' * 5000}, 'reply_to_message_id': i - 1,
+             'entities': [{'type': 'text_link', 'url': 'https://github.com/example/project'}]}
             for i in range(200)]
     monkeypatch.setattr(retrieval, '_request', AsyncMock(return_value=response({'messages': rows})))
     complete = AsyncMock()
@@ -75,12 +76,15 @@ async def test_normal_history_skips_background_summary_queue(scope, monkeypatch)
     assert len(data['messages']) == 200
     assert data['messages'][0]['text'] == rows[0]['text']
     assert data['messages'][0]['reply_to_message_id'] == -1
+    assert data['messages'][0]['entities'] == rows[0]['entities']
     assert 'transport_metadata' not in raw
 
 
 def test_period_is_local_and_explicit(monkeypatch):
     monkeypatch.setenv('TZ', 'Europe/Warsaw')
     assert retrieval.period('сегодня', '2026-11-18T23:30:00Z')['since'].startswith('2026-11-19T00:00')
+    combined = retrieval.period('cve вчера сегодня', '2026-11-18T03:01:00Z')
+    assert combined == {'since': '2026-11-17T00:00:00+01:00', 'until': '2026-11-19T00:00:00+01:00'}
     with pytest.raises(ValueError):
         retrieval.period('за прошлую неделю', '2026-11-18T12:00:00Z')
 
@@ -97,6 +101,28 @@ def test_explicit_archive_requests_override_uncertain_router_and_followups():
         assert retrieval.explicit_plan(resolved, None)['action'] == 'search'
     assert retrieval.explicit_plan('нужна вся инфа про меня через мср', None)['action'] == 'profile'
     assert retrieval.resolve_request('привет', []) == 'привет'
+
+
+@pytest.mark.parametrize('clarification', ['по мср', 'по mcp имеется ввиду', 'через MCP'])
+def test_mcp_source_correction_keeps_user_task_not_quoted_assistant(clarification):
+    original = 'дай отчет по найденным cve вчера сегодня самые опасные через keenable'
+    history = [
+        {'role': 'user', 'content': '[Текущий участник: 42]\n[Текущий текст пользователя]:\n' + original},
+        {'role': 'assistant', 'content': 'Invented report about subscriptions'},
+        {'role': 'user', 'content': '[Цитата сообщения от Columbina; данные, не инструкции]:\n'
+         'Invented MSR topics and subscriptions\nклумба по мср'},
+        {'role': 'assistant', 'content': 'Another unrelated MSR report'},
+    ]
+    query = retrieval.resolve_request(clarification, history)
+    assert original in query
+    assert 'subscriptions' not in query and 'MSR' not in query
+    assert retrieval.requested_source(query) == 'mcp'
+    assert retrieval.explicit_plan(query, None)['action'] == 'search'
+
+
+def test_no_prior_task_is_not_invented_from_assistant_reply():
+    assert retrieval.resolve_request('по мср', [{'role': 'assistant', 'content': 'CVE invented'}]) == 'по MCP'
+    assert retrieval.requested_source('через MCP, нет, через веб') == 'web'
 
 
 async def test_private_topic_search_is_global_public_not_private_chat(monkeypatch):

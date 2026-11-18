@@ -11,22 +11,41 @@ from zoneinfo import ZoneInfo
 
 from app.services.collector_mcp import _request, collector_config
 from app.services.group_collector import scoped_arguments, scoped_result
+from app.services.topics import topic_manager
 
 logger = logging.getLogger(__name__)
 
 
 def resolve_request(text, history):
     """Resolve short follow-ups from user requests only, not possibly invented answers."""
-    followup = re.compile(r'^(?:\d+\s*(?:штук|шт|пункт\w*)?|(?:дай|давай|покажи)?\s*(?:ещ[её]|больше|подробнее|чуть больше|конкретн\w* сообщ\w*|полнее).*)[.!?\s]*$', re.I)
+    text = re.sub(r'\b[mм][cс][pрп]\b', 'MCP', text, flags=re.I)
+    followup = re.compile(r'^(?:\d+\s*(?:штук|шт|пункт\w*)?|(?:дай|давай|покажи)?\s*(?:ещ[её]|больше|подробнее|чуть больше|конкретн\w* сообщ\w*|полнее).*|(?:(?:по|через)\s+)?MCP(?:\s+имеется\s+в\s*виду)?)[.!?\s]*$', re.I)
     if not followup.fullmatch(text.strip()):
         return text
     for row in reversed(history):
         if row['role'] != 'user':
             continue
         previous = row['content']
+        if '[Текущий текст пользователя]:\n' in previous:
+            previous = previous.rsplit('[Текущий текст пользователя]:\n', 1)[-1].strip()
+        elif '[Цитата сообщения от ' in previous or previous.startswith('[Текущий участник:'):
+            # Legacy stored wrappers had no explicit boundary; do not inherit an assistant quote.
+            previous = previous.rsplit('\n', 1)[-1].strip()
+        stripped = topic_manager.strip_prefix(previous)
+        if stripped is not None:
+            previous = stripped
+        previous = re.sub(r'\b[mм][cс][pрп]\b', 'MCP', previous, flags=re.I)
         if not followup.fullmatch(previous.strip()) and re.search(r'cve|уязвим|отч[её]т|mcp|мс[рп]|архив|статист|саммари', previous, re.I):
             return previous + '\n[Уточнение текущего запроса]: ' + text
     return text
+
+
+def requested_source(text):
+    """The last explicit source wins, including corrections to an earlier web request."""
+    sources = list(re.finditer(r'\bMCP\b|\bkeenable\b|веб[- ]?поиск|в интернете|через веб', text, re.I))
+    if not sources:
+        return None
+    return 'mcp' if sources[-1][0].upper() == 'MCP' else 'web'
 
 
 def explicit_plan(text, plan):
@@ -71,6 +90,10 @@ def period(text, date):
         now = now.replace(tzinfo=zone)
     today = now.astimezone(zone).date()
     lower = text.lower()
+    if 'вчера' in lower and 'сегодня' in lower:
+        start = datetime.combine(today - timedelta(days=1), day_time(), zone)
+        end = datetime.combine(today + timedelta(days=1), day_time(), zone)
+        return {'since': start.isoformat(), 'until': end.isoformat()}
     if 'сегодня' in lower:
         start = datetime.combine(today, day_time(), zone)
         return {'since': start.isoformat(), 'until': (start + timedelta(days=1)).isoformat()}
@@ -224,7 +247,7 @@ async def retrieve(plan, text, source, *, complete=None):
             rows = [{key: row[key] for key in (
                 'chat_id', 'topic_id', 'message_id', 'sender_user_id', 'sender_chat_id',
                 'author_signature', 'sent_at', 'text', 'reply_to_chat_id', 'reply_to_message_id',
-                'media_type', 'service_type', 'deleted_at', 'edited_at',
+                'media_type', 'service_type', 'deleted_at', 'edited_at', 'entities',
             ) if key in row} for row in rows]
             # A normal 1000-message history fits one model turn; avoid a queue of tiny summary calls.
             chunks, current = [], []

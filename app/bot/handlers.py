@@ -1077,12 +1077,22 @@ async def _prepare_message(
         adaptive_context = adaptive_engine.format_adaptive_prompt_context(message.from_user.id)
     user_emojis_context = asset_harvester.format_emojis_prompt_context(message.from_user.id)
 
+    request_text = message.text or message.caption or ""
+    stripped = topic_manager.strip_prefix(request_text) if group else None
+    if stripped is not None:
+        request_text = stripped
+    original = message.reply_to_message
+    # A bare invocation replying to your own request refers to that request, not idle chat.
+    if not request_text.strip() and original and original.from_user and original.from_user.id == message.from_user.id:
+        request_text = original.text or original.caption or ""
+
     return {
         "prompt": raw_user_content, "emotional_context": emotional_context,
         "adaptive_context": adaptive_context, "user_emojis_context": user_emojis_context,
         "memory_input": {
             "private": message.chat.type == "private",
             "text": message.text or message.caption or "",
+            "request_text": request_text,
             "key": f"tg:{message.chat.id}:{message.message_id}",
             "message_id": message.message_id,
             "date": message.date.isoformat(), "chat_id": message.chat.id,

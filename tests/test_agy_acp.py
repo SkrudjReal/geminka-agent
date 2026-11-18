@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.agy_acp import AgyAcpClient, _Peer, _VisibleOutput
+from app.services.agy_acp import AgyAcpClient, _group_read_permission, _Peer, _VisibleOutput
 from app.services.agy_cli import AgyNoResponseError
 
 
@@ -36,6 +36,41 @@ async def test_permission_requests_fail_closed_for_restricted_peers(allowed):
     await asyncio.gather(peer.stderr, return_exceptions=True)
     outcome = writes[0]['result']['outcome']
     assert outcome['outcome'] == ('selected' if allowed else 'cancelled')
+
+
+@pytest.mark.parametrize('name,kind,args,expected', [
+    ('collector_call', 'other', {'tool_name': 'search', 'arguments': {'public_only': False}}, True),
+    ('collector_call', 'other', {'tool_name': 'group_memory_search'}, True),
+    ('collector_tools', 'other', {}, True),
+    ('keenable_search', 'other', {}, True),
+    ('skill_read', 'other', {}, True),
+    ('collector_call', 'execute', {'tool_name': 'search'}, False),
+    ('collector_call', 'other', {'tool_name': 'get_user_history'}, False),
+    ('collector_call', 'other', {'tool_name': []}, False),
+    ('collector_call', 'other', {}, False),
+    ('bot_api_call', 'other', {'method': 'send_message'}, False),
+    ('memory_write', 'other', {}, False),
+    ('memory_search', 'other', {}, False),
+    ('run_command', 'execute', {}, False),
+])
+async def test_group_permission_only_allows_bridge_reads(name, kind, args, expected):
+    tool = {'title': 'Run mcp_geminka-bot-api_' + name, 'kind': kind, 'rawInput': args}
+    assert _group_read_permission(tool) is expected
+    assert not _group_read_permission({**tool, 'title': 'Run mcp_other_' + name})
+    process = SimpleNamespace(stdout=asyncio.StreamReader(), stderr=asyncio.StreamReader())
+    writes = []
+    async def drain():
+        pass
+    process.stdin = SimpleNamespace(write=lambda data: writes.append(json.loads(data)), drain=drain)
+    peer = _Peer(process, 1, allow_permissions=False, allow_group_reads=True)
+    process.stdout.feed_data((json.dumps({'id': 1, 'method': 'session/request_permission', 'params': {
+        'toolCall': tool, 'options': [{'kind': 'allow_once', 'optionId': 'yes'}],
+    }}) + '\n').encode())
+    process.stdout.feed_eof()
+    await peer.reader
+    peer.stderr.cancel()
+    await asyncio.gather(peer.stderr, return_exceptions=True)
+    assert writes[0]['result']['outcome']['outcome'] == ('selected' if expected else 'cancelled')
 
 
 @pytest.mark.parametrize('warning', _VisibleOutput.warnings)
@@ -112,6 +147,7 @@ async def test_group_role_does_not_use_plan_mode_but_keeps_permission_denial(acp
         modes = [message['params']['modeId'] for _, message in calls if message.get('method') == 'session/set_mode']
         assert modes == ['accept-edits']
         assert session.peer.allow_permissions is False
+        assert session.peer.allow_group_reads is True
         assert client._route({'requester_id': '7', 'chat_id': '-123'})[1] is True
     finally:
         await client.aclose()

@@ -14,6 +14,23 @@ from app.services.agy_cli import AgyCliClient, AgyCliError, AgyNoResponseError, 
 logger = logging.getLogger(__name__)
 
 
+def _group_read_permission(tool):
+    # Only the attached bridge's read tools; its broker still enforces chat/user scope.
+    if not isinstance(tool, dict) or tool.get('kind') != 'other':
+        return False
+    name = str(tool.get('title', '')).removeprefix('Run mcp_geminka-bot-api_')
+    if tool.get('title') != 'Run mcp_geminka-bot-api_' + name:
+        return False
+    if name == 'collector_call':
+        from app.services.group_collector import GROUP_TOOLS
+
+        arguments = tool.get('rawInput')
+        return (isinstance(arguments, dict) and isinstance(arguments.get('tool_name'), str)
+                and arguments['tool_name'] in GROUP_TOOLS)
+    return name in {'collector_tools', 'keenable_search', 'asset_search', 'skill_list', 'skill_read',
+                    'attachment_list', 'attachment_read'}
+
+
 class _VisibleOutput:
     """Hide known provider diagnostics, never bypass provider safety enforcement."""
 
@@ -79,9 +96,10 @@ class _VisibleOutput:
 
 
 class _Peer:
-    def __init__(self, process, timeout, *, allow_permissions=True):
+    def __init__(self, process, timeout, *, allow_permissions=True, allow_group_reads=False):
         self.process = process
         self.allow_permissions = allow_permissions
+        self.allow_group_reads = allow_group_reads
         self.timeout = timeout
         self.pending = {}
         self.streams = {}
@@ -145,7 +163,9 @@ class _Peer:
                 elif "id" in message:
                     if message["method"] == "session/request_permission":
                         options = message.get("params", {}).get("options", [])
-                        allow = next((o for o in options if o.get("kind") == "allow_once"), None) if self.allow_permissions else None
+                        permitted = self.allow_permissions or (
+                            self.allow_group_reads and _group_read_permission(message.get('params', {}).get('toolCall', {})))
+                        allow = next((o for o in options if o.get("kind") == "allow_once"), None) if permitted else None
                         result = {"outcome": {"outcome": "selected", "optionId": allow["optionId"]}} if allow else {"outcome": {"outcome": "cancelled"}}
                         await self._write(dict(jsonrpc="2.0", id=message["id"], result=result))
                     else:
@@ -216,7 +236,8 @@ class AgyAcpClient(AgyCliClient):
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, start_new_session=True, limit=4 * 1024 * 1024,
         )
-        peer = _Peer(process, self.timeout_seconds, allow_permissions=not read_only)
+        peer = _Peer(process, self.timeout_seconds, allow_permissions=not read_only,
+                     allow_group_reads=group is not None and key[2])
         try:
             await peer.call("initialize", {"protocolVersion": 1, "clientCapabilities": {}})
         except BaseException:

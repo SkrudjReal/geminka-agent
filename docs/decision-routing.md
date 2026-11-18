@@ -61,6 +61,14 @@ Sources: [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisi
   uncertain decision. Short follow-ups inherit the preceding user request, not
   facts from an assistant's potentially unsupported answer. Private topic
   searches cover archived groups/channels instead of filtering by the bot DM ID.
+- A bare group invocation replying to the sender's own request routes using that
+  original request, not just the bot's name. Quoted authors never replace the
+  trusted Telegram sender or grant permissions. “Yesterday and today” covers both
+  local calendar days for archive and web date filters.
+- Source-only corrections such as “по мср” or “по MCP имеется в виду” reuse the
+  preceding user task, not a quoted assistant report. The last explicit source
+  wins over earlier web-search wording; the resolved task also reaches the reply
+  model, so MCP is not mistaken for a new topic named MSR.
 - Full user reports resolve an exact username or the trusted requester ID for
   self-reports, then fetch statistics, activity, words, phrases, incoming/outgoing
   replies, public message examples and (owner-private only) profile history.

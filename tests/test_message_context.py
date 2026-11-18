@@ -1,9 +1,38 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from aiogram.types import Chat, Message, Sticker, User
 
 from app.bot import helpers
+
+
+@pytest.mark.parametrize('text,author,expected', [
+    ('клумба', 42, 'дай отчет по найденным cve вчера сегодня самые опасные'),
+    ('клумба', 43, ''),
+    ('клумба привет', 42, 'привет'),
+])
+async def test_bare_invocation_routes_own_replied_request_only(monkeypatch, text, author, expected):
+    from app.bot import handlers
+
+    chat = Chat(id=-1001, type='supergroup')
+    quoted = Message(message_id=10, date=0, chat=chat,
+                     from_user=User(id=author, first_name='Other', is_bot=False),
+                     text='дай отчет по найденным cve вчера сегодня самые опасные')
+    message = Message(message_id=11, date=0, chat=chat,
+                      from_user=User(id=42, first_name='User', is_bot=False),
+                      text=text, reply_to_message=quoted)
+    monkeypatch.setattr(handlers, 'state_store', SimpleNamespace(is_debug_mode=lambda _: True))
+    monkeypatch.setattr(handlers, 'group_message_allowed', lambda *_: True)
+    monkeypatch.setattr(handlers, 'extract_message_context', AsyncMock(return_value='quoted request and current text'))
+    monkeypatch.setattr(handlers.topic_manager, 'is_topic_active', lambda *_: False)
+    monkeypatch.setattr(handlers.topic_manager, 'strip_prefix', lambda value: value.removeprefix('клумба').strip())
+    monkeypatch.setattr(handlers.asset_harvester, 'format_emojis_prompt_context', lambda _: '')
+    prepared = await handlers._prepare_message(message, SimpleNamespace(id=99), None)
+    assert prepared['memory_input']['request_text'] == expected
+    assert prepared['memory_input']['text'] == text
+    assert prepared['memory_input']['name'] == 'User'
 
 
 @pytest.mark.asyncio
