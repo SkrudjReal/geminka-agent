@@ -28,6 +28,10 @@ env/
 venv/
 ENV/
 .pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Logs & Runtime
 *.log
@@ -48,6 +52,8 @@ downloads/
 *.db-shm
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.sqlite3-journal
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite3-wal
@@ -70,3 +76,10 @@ yarn-error.log*
 *.swo
 .DS_Store
 Thumbs.db
+
+# Local agent instructions, maintenance scripts and generated code graph
+/AGENTS.md
+/assistant.md
+/manual_reset_mood.py
+/reset_mood.py
+/graphify-out/

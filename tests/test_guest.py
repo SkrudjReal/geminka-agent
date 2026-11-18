@@ -64,6 +64,22 @@ async def test_guest_uses_only_supplied_reply_context():
     await guest.guest_message(message(original=original), bot, client)
     uid, prompt = client.inline_completion.call_args.args
     assert uid == 11 and 'original context' in prompt and '@columbina_ai_bot' in prompt
+    import json
+
+    identity = json.loads(client.inline_completion.call_args.kwargs['identity'])
+    assert identity['user_id'] == 11
+
+
+async def test_guest_uses_actual_caller_not_forwarded_sender():
+    client = SimpleNamespace(inline_completion=AsyncMock(return_value='answer'))
+    bot = SimpleNamespace(answer_guest_query=AsyncMock())
+    event = message(uid=10002)
+    event.guest_bot_caller_user = SimpleNamespace(id=10001, username='example_user',
+                                                  full_name='Example User', is_bot=False)
+    await guest.guest_message(event, bot, client)
+    assert client.inline_completion.call_args.args[0] == 10001
+    assert 'example_user' in client.inline_completion.call_args.kwargs['identity']
+    assert '10002' not in client.inline_completion.call_args.kwargs['identity']
 
 
 async def test_uncertain_guest_send_is_not_replayed():
@@ -114,4 +130,6 @@ async def test_public_completion_uses_isolated_no_mcp_profile_and_no_history(mon
     assert params['tool_context'] == {'requester_id': 'summary', 'chat_id': str(-10**18 - 11)}
     assert len(params['messages']) == 2 and params['messages'][1]['content'] == 'hello'
     assert 'premium <tg-emoji>' in params['messages'][0]['content']
+    assert 'user_id=11' in params['messages'][0]['content']
+    assert 'только пример разметки' in params['messages'][0]['content']
     assert 'Use plain text only' not in params['messages'][0]['content']

@@ -47,6 +47,18 @@ def test_long_text_is_split_within_limit() -> None:
     assert all(len(chunk) <= 500 for chunk in chunks)
 
 
+def test_long_expandable_report_stays_in_quotes_across_messages():
+    import re
+
+    body = '\n'.join(f'Факт {i}: источник и точная цитата.' for i in range(150))
+    chunks = split_telegram_text('<blockquote expandable>' + body + '</blockquote>', limit=500)
+    assert len(chunks) > 1
+    assert all(chunk.startswith('<blockquote expandable>') and chunk.endswith('</blockquote>') for chunk in chunks)
+    assert all(len(chunk) <= 500 for chunk in chunks)
+    restored = '\n'.join(re.sub(r'</?blockquote[^>]*>', '', chunk) for chunk in chunks)
+    assert restored == body
+
+
 def test_delivery_text_unescapes_literal_newlines() -> None:
     assert strip_delivery_tags("one\\n\\ntwo") == "one\n\ntwo"
 
@@ -77,8 +89,8 @@ async def test_final_stream_message_keeps_forum_thread_id() -> None:
     bot = _FakeBot()
     consumer = TelegramStreamConsumer(
         bot=bot,
-        chat_id=-1004488980222,
-        user_id=1224362805,
+        chat_id=-1001234567890,
+        user_id=10001,
         target_message_id=41,
         message_thread_id=5,
     )

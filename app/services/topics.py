@@ -57,11 +57,11 @@ class TopicManager:
     def parse_topic_link(raw_input: str) -> Optional[Tuple[int, int]]:
         """
         Parses links like:
-        - https://t.me/c/4488980222/5
-        - https://t.me/c/4488980222/5/123
-        - t.me/c/4488980222/5
-        - -1004488980222 5
-        - -1004488980222:5
+        - https://t.me/c/1234567890/5
+        - https://t.me/c/1234567890/5/123
+        - t.me/c/1234567890/5
+        - -1001234567890 5
+        - -1001234567890:5
         """
         text = raw_input.strip()
 
@@ -76,7 +76,7 @@ class TopicManager:
                 chat_id = int(f"-{chat_num}")
             return chat_id, topic_id
 
-        # 2. Regex for direct chat_id and topic_id (e.g. -1004488980222:5 or -1004488980222 5)
+        # 2. Regex for direct chat_id and topic_id (e.g. -1001234567890:5 or -1001234567890 5)
         direct_match = re.search(r"(-?\d{8,})[:\s/]+(\d+)", text)
         if direct_match:
             raw_cid = direct_match.group(1)

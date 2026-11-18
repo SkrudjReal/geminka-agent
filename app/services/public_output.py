@@ -8,13 +8,13 @@ import re
 import unicodedata
 from urllib.parse import unquote
 
-SAFE_REPLY = 'Внутренние данные сервера не публикую.'
+SAFE_REPLY = 'Неа, это останется за кулисами)'
 logger = logging.getLogger(__name__)
 _SENSITIVE_NAME = re.compile(r'(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|BROKER_KEY)', re.I)
 _CREDENTIAL = re.compile(
     r'\b\d{6,12}:[A-Za-z0-9_-]{30,}\b|'
     r'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|'
-    r'sk-(?:proj-)?[A-Za-z0-9_-]{20,}|ya29\.[A-Za-z0-9_-]{20,})|'
+    r'sk-(?:proj-)?[A-Za-z0-9_-]{20,}|keen_[A-Za-z0-9_]{20,}|ya29\.[A-Za-z0-9_-]{20,})|'
     r'\bAKIA[A-Z0-9]{16}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|'
     r'\b(?:Authorization\s*:\s*Bearer\s+|_pinterest_sess\s*=)[A-Za-z0-9_./+=%-]{12,}|'
     r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|'

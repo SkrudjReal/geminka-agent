@@ -278,6 +278,19 @@ ACTION_ALIASES: Dict[str, str] = {
 }
 
 
+def can_reciprocate_rp(user_id: int, action: str) -> bool:
+    from app.engines.emotional import emotion_engine
+
+    key = ACTION_ALIASES.get(action.lower().strip(), action.lower().strip())
+    state = emotion_engine.get_state(user_id, persist=False)
+    affectionate = {'погладить', 'обнять', 'потискать', 'поцеловать', 'засосать', 'лизнуть',
+                    'потрогать', 'трахнуть', 'выебать', 'надругаться', 'шлепнуть', 'шлеп'}
+    romantic = affectionate - {'погладить', 'обнять', 'потискать'}
+    if key in affectionate and (state.hurt >= 20 or state.warmth < 40):
+        return False
+    return key not in romantic or emotion_engine.relationship.get('partner_id') == user_id
+
+
 def get_random_rp_phrase(action: str, sender: str, target: str) -> Optional[str]:
     """Returns a formatted random RP phrase from the library."""
     action_key = ACTION_ALIASES.get(action.lower().strip(), action.lower().strip())

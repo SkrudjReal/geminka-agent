@@ -146,6 +146,11 @@ async def main() -> None:
         await daily_chat.close()
         await turn_batches.close()
         await antigravity_client.aclose()
+        from app.services.collector_mcp import close_collector
+        from app.services.decisions import decisions
+
+        await close_collector()
+        await decisions.aclose()
         antigravity_client.memories.close()
         await bot.session.close()
 

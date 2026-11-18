@@ -113,10 +113,15 @@ context stays separated by user/chat/thread as before.
 
 The old MemPalace and Markdown user memories are not imported. The explicit local
 wipe used for this transition is `scripts/reset_private_memory.py --confirm-delete`.
-Stop the project's systemd service before running it. It irreversibly deletes the
-local old memory, AGY conversation/cache/log directories, short-context records,
-portraits and adaptation; it preserves authentication, model/sandbox settings and
-sticker catalogues. Do not run it for an ordinary upgrade.
+Stop the project's systemd service before running it. Use `--backup /absolute/path`
+to choose an empty backup directory outside the project (otherwise a private temporary
+directory is created). The script backs up databases/state and moves old runtime
+artifacts there, then resets local facts, summaries, short context, observer batches,
+portraits, emotions and adaptation, including group memory and group AGY histories.
+It preserves authentication, model/sandbox settings, chat configuration, media
+catalogues and per-user emoji/sticker/GIF preferences. Learned phrases/theses are
+cleared. Do not run it for an ordinary upgrade. The backup retains the old private
+data until you explicitly remove it.
 
 This is application-level local deletion, not forensic secure erasure. Git history,
 OS backups, external/shared AGY installations, provider-side conversations and Telegram

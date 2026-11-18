@@ -33,6 +33,8 @@ class SensitiveDataFilter(logging.Filter):
             return text
         sanitized = self.token_regex.sub("[REDACTED_BOT_TOKEN]", text)
         sanitized = self.bearer_regex.sub("Bearer [REDACTED_TOKEN]", sanitized)
+        sanitized = re.sub(r'\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}', '[REDACTED_API_KEY]', sanitized)
+        sanitized = re.sub(r'\bkeen_[A-Za-z0-9_]{20,}', '[REDACTED_API_KEY]', sanitized)
         if config.BOT_TOKEN and config.BOT_TOKEN in sanitized:
             sanitized = sanitized.replace(config.BOT_TOKEN, "[REDACTED_BOT_TOKEN]")
         return sanitized

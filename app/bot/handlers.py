@@ -810,8 +810,8 @@ async def cb_topic_add(callback: types.CallbackQuery, state: FSMContext):
     text = (
         '<tg-emoji emoji-id="5363859217159582224">📖</tg-emoji> **Добавление чата топика:**\n\n'
         'Пришли ссылку на топик вида:\n'
-        '`https://t.me/c/4488980222/5`\n\n'
-        '_(Где `4488980222` — ID группы, а `5` — ID топика)_'
+        '`https://t.me/c/1234567890/5`\n\n'
+        '_(Где `1234567890` — ID группы, а `5` — ID топика)_'
     )
     await callback.message.edit_text(md_to_telegram_html(text), reply_markup=cancel_kb, parse_mode=ParseMode.HTML)
 
@@ -831,7 +831,7 @@ async def process_topic_link(message: types.Message, state: FSMContext, bot: Bot
         await message.answer(
             md_to_telegram_html(
                 "⚠️ Не удалось распознать ссылку на топик.\n"
-                "Пожалуйста, пришли ссылку вида `https://t.me/c/4488980222/5`:"
+                "Пожалуйста, пришли ссылку вида `https://t.me/c/1234567890/5`:"
             ),
             reply_markup=cancel_kb,
             parse_mode=ParseMode.HTML,
@@ -1034,17 +1034,9 @@ async def _prepare_message(
         if rp_banner:
             raw_user_content += "\n[Ответь на RP-действие одним общим ответом, без отдельного баннера.]"
 
-        # Sweet RP actions boost warmth & affection
-        if not debug_mode and action in ['погладить', 'обнять', 'поцеловать', 'потискать', 'чай', 'покормить', 'кусь']:
-            state = emotion_engine.get_state(message.from_user.id)
-            state.affection = min(100, state.affection + 5)
-            state.warmth = min(100, state.warmth + 4)
-            state.affinity += 3
-            state.mood = "affectionate" if state.warmth > 80 else "playful"
-            emotion_engine.save()
-
+        # Incoming RP is an attempt by the user, not consent or a relationship bonus.
         if not extra_text:
-            raw_user_content = f"[{user_mention} выполнил(-а) RP-действие: «{action}» по отношению к Коломбине. Отреагируй на это взаимно, нежно, эмоционально и в характере!]"
+            raw_user_content = f"[{user_mention} предлагает RP-действие: «{action}». Реагируй в характере с учётом текущего mood и выбранного партнёра. Взаимность не обязательна; при обиде сохрани дистанцию.]"
 
     # Realistic sticker response logic (50% pure sticker/RP/reaction, 50% with text)
     is_pure_sticker = bool(message.sticker and not message.caption)
@@ -1196,6 +1188,7 @@ async def _answer_batch(batch: PendingTurn, bot: Bot, antigravity_client: Antigr
                     def current(expected=revision):
                         return batch.revision == expected
                     logger.info("telegram generation_start user=%s batch_size=%d attempt=%d", user_id, revision, attempt)
+                    generation_started = time.monotonic()
                     try:
                         reply = []
                         async for chunk in antigravity_client.generate_stream(
@@ -1204,6 +1197,10 @@ async def _answer_batch(batch: PendingTurn, bot: Bot, antigravity_client: Antigr
                             adaptive_context=latest["adaptive_context"],
                             user_emojis_context=latest["user_emojis_context"],
                         ):
+                            if not reply:
+                                logger.info('telegram first_token_ms=%.0f since_arrival_ms=%.0f user=%s',
+                                            (time.monotonic() - generation_started) * 1000,
+                                            (time.monotonic() - received_at) * 1000, user_id)
                             reply.append(chunk)
                             if current():
                                 yield chunk

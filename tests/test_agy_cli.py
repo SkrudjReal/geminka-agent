@@ -112,7 +112,7 @@ async def test_group_context_cursor_committed_only_after_success_and_reset_with_
     async def get_session(*args):
         return session
 
-    async def build(*args, state):
+    async def build(*args, state, archive_enabled=True):
         seen.append(dict(state))
         state["cursor"] = args[2]
         return "GROUP DELTA"

@@ -15,23 +15,39 @@ logger = logging.getLogger(__name__)
 
 
 class _VisibleOutput:
-    """Suppress only AGY's standalone recoverable diagnostic, across chunk boundaries."""
+    """Hide known provider diagnostics, never bypass provider safety enforcement."""
 
     warnings = ("⚠ Model produced invalid output.", "⚠️ Model produced invalid output.")
+    notices = ('⚠ Your previous response was blocked by content safety filters:',
+               '⚠️ Your previous response was blocked by content safety filters:')
 
     def __init__(self):
         self.pending = ""
         self.line_start = True
         self.fenced_code = False
+        self.provider_notice = False
 
     def feed(self, text):
         output = []
         for char in text:
+            if self.provider_notice:
+                self.pending += char
+                if char == '\n':
+                    if self.pending.strip().startswith('Retries remaining:'):
+                        self.provider_notice = False
+                        self.line_start = True
+                    self.pending = ''
+                continue
             if not self.line_start:
                 output.append(char)
                 self.line_start = char == "\n"
                 continue
             self.pending += char
+            if not self.fenced_code and self.pending in self.notices:
+                self.provider_notice = True
+                self.pending = ''
+                logger.warning('Provider safety diagnostic hidden; safety policy remains enforced')
+                continue
             if self.pending == "```":
                 self.fenced_code = not self.fenced_code
                 output.append(self.pending)
@@ -43,7 +59,7 @@ class _VisibleOutput:
                 self.pending = ""
                 logger.warning("AGY reported an empty model step; awaiting completion of the same turn")
             elif not self.fenced_code and any(warning.startswith(self.pending) or self.pending == warning + "\r"
-                                              for warning in self.warnings):
+                                              for warning in (*self.warnings, *self.notices)):
                 continue
             else:
                 output.append(self.pending)
@@ -52,6 +68,9 @@ class _VisibleOutput:
         return "".join(output)
 
     def finish(self):
+        if self.provider_notice:
+            self.pending = ''
+            return ''
         pending, self.pending = self.pending, ""
         if pending.rstrip("\r") in self.warnings:
             logger.warning("AGY reported an empty model step without a visible response")
@@ -116,6 +135,11 @@ class _Peer:
                     queue = self.streams.get(params.get("sessionId"))
                     update = params.get("update", {})
                     content = update.get("content", {})
+                    if update.get('sessionUpdate') in {'tool_call', 'tool_call_update'}:
+                        # Tool titles/arguments may contain secrets; only record lifecycle metadata.
+                        status = update.get('status')
+                        safe_status = status if status in {'pending', 'in_progress', 'completed', 'failed'} else 'unknown'
+                        logger.info('agy tool_event phase=%s status=%s', update['sessionUpdate'], safe_status)
                     if queue is not None and update.get("sessionUpdate") == "agent_message_chunk" and content.get("type") == "text":
                         queue.put_nowait(content.get("text", ""))
                 elif "id" in message:
@@ -230,7 +254,10 @@ class AgyAcpClient(AgyCliClient):
         session.peer = peer
         try:
             await peer.call("session/set_model", {"sessionId": session_id, "modelId": model})
-            await peer.call("session/set_mode", {"sessionId": session_id, "modeId": "plan" if self._route(context)[1] else "accept-edits"})
+            # Plan mode injects a coding/planning workflow; isolation is enforced outside the model.
+            group, read_only, _, _ = self._route(context)
+            mode = "plan" if read_only and group is None else "accept-edits"
+            await peer.call("session/set_mode", {"sessionId": session_id, "modeId": mode})
         except BaseException:
             await self._close_session(session)
             raise

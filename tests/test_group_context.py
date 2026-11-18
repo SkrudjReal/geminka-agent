@@ -124,6 +124,16 @@ async def test_archive_failure_preserves_local_context(monkeypatch):
     assert "text-1" in output
 
 
+async def test_decision_skips_network_but_keeps_local_100_messages(monkeypatch):
+    request = AsyncMock(side_effect=AssertionError('Archive is unnecessary'))
+    monkeypatch.setattr(context, 'collector_config', lambda: object())
+    monkeypatch.setattr(context, '_request', request)
+    context.observe(message(1))
+    output = await context.build_context(-1001, None, 2, 42, '2026-11-18T12:00:00Z', archive_enabled=False)
+    assert 'text-1' in output
+    request.assert_not_awaited()
+
+
 async def test_middleware_records_non_triggering_messages(monkeypatch):
     from aiogram.types import Chat, Message, User
 

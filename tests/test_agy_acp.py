@@ -8,6 +8,18 @@ from app.services.agy_acp import AgyAcpClient, _Peer, _VisibleOutput
 from app.services.agy_cli import AgyNoResponseError
 
 
+def test_provider_safety_diagnostics_are_hidden_at_every_chunk_boundary():
+    notice = ('⚠ Your previous response was blocked by content safety filters: The model output could not be generated. '
+              'This output contains sensitive words.\nPlease provide a compliant response.\nRetries remaining: 3\n')
+    text = notice + notice.replace('3\n', '2\n') + 'Нет, такое не обсуждаю.'
+    for boundary in range(len(text) + 1):
+        visible = _VisibleOutput()
+        assert visible.feed(text[:boundary]) + visible.feed(text[boundary:]) + visible.finish() == 'Нет, такое не обсуждаю.'
+    quoted = '```text\n' + notice + '```'
+    visible = _VisibleOutput()
+    assert visible.feed(quoted) + visible.finish() == quoted
+
+
 @pytest.mark.parametrize('allowed', [True, False])
 async def test_permission_requests_fail_closed_for_restricted_peers(allowed):
     process = SimpleNamespace(stdout=asyncio.StreamReader(), stderr=asyncio.StreamReader())
@@ -89,6 +101,18 @@ async def test_warning_only_turn_is_not_a_success_or_retryable(acp, monkeypatch,
         with pytest.raises(AgyNoResponseError) as error:
             _ = [chunk async for chunk in client._send(session, 'hello')]
         assert not error.value.retryable
+    finally:
+        await client.aclose()
+
+
+async def test_group_role_does_not_use_plan_mode_but_keeps_permission_denial(acp):
+    client, calls, _ = acp
+    try:
+        session = await client._get_session(1, 'gemini-low', 'low', {'requester_id': '7', 'chat_id': '-123'})
+        modes = [message['params']['modeId'] for _, message in calls if message.get('method') == 'session/set_mode']
+        assert modes == ['accept-edits']
+        assert session.peer.allow_permissions is False
+        assert client._route({'requester_id': '7', 'chat_id': '-123'})[1] is True
     finally:
         await client.aclose()
 

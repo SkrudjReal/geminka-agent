@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -6,6 +7,26 @@ from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 
 from app.core import config
 from app.services import bot_api_mcp, collector_mcp
+
+
+async def test_singleflight_survives_one_cancelled_waiter(monkeypatch):
+    calls = []
+    async def worker(connection):
+        while True:
+            name, arguments, future = await connection.queue.get()
+            calls.append((name, arguments))
+            await asyncio.sleep(.02)
+            if not future.done():
+                future.set_result({'ok': True, 'result': {'value': 1}})
+    monkeypatch.setattr(collector_mcp._Connection, 'run', worker)
+    cfg = collector_mcp.CollectorConfig('https://collector.example/mcp', 'fake')
+    one = asyncio.create_task(collector_mcp._request(cfg, 'search', {'query': 'same'}))
+    two = asyncio.create_task(collector_mcp._request(cfg, 'search', {'query': 'same'}))
+    await asyncio.sleep(.01)
+    one.cancel()
+    await asyncio.gather(one, return_exceptions=True)
+    assert (await two)['ok']
+    assert len(calls) == 1
 
 
 class Registry:
@@ -136,6 +157,11 @@ async def test_read_only_discovery_and_result_with_authenticated_transport(enabl
     assert calls == [("search", {"query": "воспоминание", "limit": 1}),
                      ("search_messages", {"limit": 1})]
     assert not (await collector_mcp._request(cfg, "get_user_history", {}))["ok"]
+    assert len(calls) == 2
+    # Same authenticated session, cached discovery/results, and isolated return objects.
+    repeated = await collector_mcp._request(cfg, 'search', {'query': 'воспоминание', 'limit': 1})
+    repeated['ok'] = False
+    assert (await collector_mcp._request(cfg, 'search', {'query': 'воспоминание', 'limit': 1}))['ok']
     assert len(calls) == 2
 
 

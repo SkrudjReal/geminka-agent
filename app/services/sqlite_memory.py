@@ -43,6 +43,7 @@ class SQLiteMemory:
                     UNIQUE(user_id, event_key)
                 );
                 CREATE INDEX IF NOT EXISTS records_user ON records(user_id, id);
+                CREATE INDEX IF NOT EXISTS records_user_kind ON records(user_id, kind, id);
                 CREATE TABLE IF NOT EXISTS summary_state (
                     user_id INTEGER PRIMARY KEY, through_id INTEGER NOT NULL DEFAULT 0,
                     epoch INTEGER NOT NULL DEFAULT 0
@@ -60,6 +61,7 @@ class SQLiteMemory:
                     user_id INTEGER NOT NULL, event_key TEXT NOT NULL,
                     PRIMARY KEY(user_id,event_key)
                 );
+                CREATE INDEX IF NOT EXISTS style_user_rank ON style_usage(user_id, kind, count DESC, updated_at DESC);
                 CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
                     text, content='records', content_rowid='id', tokenize='unicode61'
                 );
@@ -97,6 +99,7 @@ class SQLiteMemory:
         target = str(self.path) if write else self.path.resolve().as_uri() + "?mode=ro"
         db = sqlite3.connect(target, timeout=5, uri=not write)
         db.row_factory = sqlite3.Row
+        db.execute('PRAGMA cache_size=-2048')
         if write:
             db.execute("PRAGMA secure_delete=ON")
         try:
@@ -218,7 +221,7 @@ class SQLiteMemory:
 
     def portrait(self, user_id: int) -> str:
         with self._connect() as db:
-            row = db.execute("SELECT text FROM records WHERE user_id=? AND kind='portrait'", (user_id,)).fetchone()
+            row = db.execute("SELECT text FROM records WHERE user_id=? AND event_key='portrait'", (user_id,)).fetchone()
         return row[0] if row else ""
 
     def format_memory_context(self, user_id: int) -> str:

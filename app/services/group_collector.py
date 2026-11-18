@@ -178,6 +178,9 @@ class GroupCollectorBroker:
         annotations = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
         self.mcp.tool(annotations=annotations)(self.collector_tools)
         self.mcp.tool(annotations=annotations)(self.collector_call)
+        from app.services.web_search import register_web_search
+
+        register_web_search(self.mcp, lambda: bool(self._chat()))
 
     def _chat(self) -> int:
         request = self.mcp.get_context().request_context.request

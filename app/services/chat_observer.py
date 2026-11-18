@@ -1,4 +1,4 @@
-"""Persistent, non-overlapping 100-message batches for optional group replies."""
+"""Persistent, non-overlapping 20-message batches for optional group replies."""
 
 import asyncio
 import json
@@ -52,25 +52,41 @@ class ChatObserver:
 
     def claim(self):
         with self.db:
-            group = self.db.execute("""SELECT chat_id,thread_id FROM messages WHERE status='pending'
-                GROUP BY chat_id,thread_id HAVING count(*)>=100 ORDER BY min(rowid) LIMIT 1""").fetchone()
+            group = self.db.execute("""SELECT chat_id,thread_id FROM messages WHERE status='pending' AND eligible=1
+                GROUP BY chat_id,thread_id HAVING count(*)>=20 ORDER BY min(rowid) LIMIT 1""").fetchone()
             if group is None:
                 return []
-            rows = self.db.execute("""SELECT * FROM messages WHERE status='pending' AND chat_id=? AND thread_id=?
-                ORDER BY message_id LIMIT 100""", tuple(group)).fetchall()
+            rows = self.db.execute("""SELECT * FROM messages WHERE status='pending' AND eligible=1 AND chat_id=? AND thread_id=?
+                ORDER BY message_id LIMIT 20""", tuple(group)).fetchall()
             # Claim before generation: a crash or uncertain send must not replay a batch.
             self.db.executemany("UPDATE messages SET status='attempted' WHERE chat_id=? AND message_id=?",
                                 [(r['chat_id'], r['message_id']) for r in rows])
         return [dict(row) for row in rows]
 
     async def generate(self, rows):
+        from app.services.decisions import decisions
+
+        context = []
+        for user_id in dict.fromkeys(row['user_id'] for row in rows):
+            if self.store.is_debug_mode(user_id):
+                continue
+            query = ' '.join(row['text'] for row in rows if row['user_id'] == user_id)[-1000:]
+            memory = await asyncio.to_thread(self.client.group_memories.recall,
+                                             rows[0]['chat_id'], user_id, query, 2)
+            context.append({'user_id': user_id, 'summary': memory['summary'][:1000],
+                            'hits': [{**hit, 'text': hit['text'][:500]} for hit in memory['hits']]})
+        target = await decisions.observer_target(rows, context=context)
+        if not target:
+            return 'NO_REPLY'
+        selection = f'\nВыбран message_id={target}; ответь только ему или NO_REPLY.'
         agy = AgyCliClient(command=self.client._agy.command, timeout_seconds=90, sandbox_enabled=True)
         try:
             chunks = [chunk async for chunk in agy.stream(
                 -abs(rows[0]['chat_id']), model=self.client.get_user_model(config.settings.owner_user_id),
                 effort="low", debug=True,
-                messages=[{"role": "system", "content": config.get_system_prompt() + '\n' + PROMPT.read_text()},
-                          {"role": "user", "content": json.dumps(rows, ensure_ascii=False)}],
+                messages=[{"role": "system", "content": config.get_system_prompt() + '\n' + PROMPT.read_text() + selection},
+                          {"role": "user", "content": json.dumps(
+                              {'messages': rows, 'local_memory': context}, ensure_ascii=False)}],
                 tool_context={"requester_id": "summary", "chat_id": str(rows[0]['chat_id'])},
             )]
             return ''.join(chunks).strip()

@@ -52,6 +52,7 @@ class StickerPackScanner:
         self.grids_dir.mkdir(parents=True, exist_ok=True)
         self._pack_locks: Dict[str, asyncio.Lock] = {}
         self._scheduled_scans: Dict[str, asyncio.Task] = {}
+        self._scan_retry_after: Dict[str, float] = {}
         self._agy = (
             AgyCliClient(timeout_seconds=360)
             if config.settings.transport == "agy"
@@ -68,6 +69,9 @@ class StickerPackScanner:
         task = self._scheduled_scans.get(set_name)
         if task is not None and not task.done():
             return
+        if time.monotonic() < self._scan_retry_after.get(set_name, 0):
+            return
+        self._scan_retry_after[set_name] = time.monotonic() + 1800
         self._scheduled_scans[set_name] = asyncio.create_task(
             self.scan_sticker_pack(bot, set_name, user_id=user_id)
         )
@@ -118,7 +122,7 @@ class StickerPackScanner:
                 duration, _ = await asyncio.wait_for(probe.communicate(), 15)
                 midpoint = float(duration.strip()) / 2
                 cmd = [
-                    "ffmpeg", "-y", "-i", str(raw_path), "-ss", str(midpoint),
+                    "ffmpeg", "-nostdin", "-y", "-ss", str(midpoint), "-i", str(raw_path),
                     "-vframes", "1", str(png_path)
                 ]
                 proc = await asyncio.create_subprocess_exec(
@@ -126,6 +130,13 @@ class StickerPackScanner:
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
+                await asyncio.wait_for(proc.wait(), 30)
+                if png_path.exists() and png_path.stat().st_size > 0:
+                    return png_path
+                # A one-frame video may have no frame at its midpoint; use its first frame.
+                proc = await asyncio.create_subprocess_exec(
+                    'ffmpeg', '-nostdin', '-y', '-i', str(raw_path), '-vframes', '1', str(png_path),
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
                 await asyncio.wait_for(proc.wait(), 30)
                 if png_path.exists() and png_path.stat().st_size > 0:
                     return png_path

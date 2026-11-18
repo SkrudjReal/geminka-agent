@@ -476,18 +476,31 @@ def split_telegram_text(text: str, limit: int = 3_500) -> list[str]:
         return [""]
     chunks: list[str] = []
     remaining = text
-    while len(remaining) > limit:
-        boundary = remaining.rfind("\n\n", 0, limit + 1)
-        if boundary < limit // 2:
-            boundary = remaining.rfind("\n", 0, limit + 1)
-        if boundary < limit // 2:
-            boundary = remaining.rfind(" ", 0, limit + 1)
+    quote_prefix = ''
+    quote_re = re.compile(r'<blockquote(?:\s+expandable)?\s*>|</blockquote>', re.I)
+    while len(quote_prefix) + len(remaining) > limit:
+        # Reopen a long report's quote in each Telegram message, not only the first.
+        budget = limit - len(quote_prefix) - len('</blockquote>')
+        if budget <= 0:
+            raise ValueError('Message limit is too small for blockquote markup')
+        boundary = remaining.rfind("\n\n", 0, budget + 1)
+        if boundary < budget // 2:
+            boundary = remaining.rfind("\n", 0, budget + 1)
+        if boundary < budget // 2:
+            boundary = remaining.rfind(" ", 0, budget + 1)
         if boundary <= 0:
-            boundary = limit
-        chunks.append(remaining[:boundary].rstrip())
+            boundary = budget
+        # Do not cut a tag's attributes in half.
+        tag_start = remaining.rfind('<', 0, boundary)
+        if tag_start > 0 and remaining.find('>', tag_start) >= boundary:
+            boundary = tag_start
+        fragment = quote_prefix + remaining[:boundary].rstrip()
+        for tag in quote_re.finditer(fragment):
+            quote_prefix = '' if tag.group().startswith('</') else tag.group()
+        chunks.append(fragment + ('</blockquote>' if quote_prefix else ''))
         remaining = remaining[boundary:].lstrip()
     if remaining or not chunks:
-        chunks.append(remaining)
+        chunks.append(quote_prefix + remaining)
     return chunks
 
 
@@ -841,6 +854,11 @@ class TelegramStreamConsumer:
                         relationship=_tag_attr(mood_matches[-1].group(1), "relationship"),
                     )
 
+        if rp_banner:
+            from app.engines.rp import can_reciprocate_rp
+
+            if not self.user_id or not can_reciprocate_rp(self.user_id, m_act.group(1)):
+                rp_banner = ''
         final_text = self._emoji_policy(strip_delivery_tags(final_raw))
         if isinstance(reaction_obj, ReactionTypeCustomEmoji) and reaction_obj.custom_emoji_id not in self.allowed_emojis:
             reaction_obj = ReactionTypeEmoji(emoji="❤")

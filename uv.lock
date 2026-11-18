@@ -1042,6 +1042,7 @@ dependencies = [
     { name = "cairosvg" },
     { name = "faster-whisper" },
     { name = "httpx" },
+    { name = "keenable" },
     { name = "lottie" },
     { name = "mcp" },
     { name = "pillow" },
@@ -1069,6 +1070,7 @@ requires-dist = [
     { name = "cairosvg", specifier = ">=2.7" },
     { name = "faster-whisper", specifier = ">=1.2.0,<2" },
     { name = "httpx", specifier = ">=0.28.0" },
+    { name = "keenable", specifier = ">=0.1.5,<0.2.0" },
     { name = "lottie", specifier = ">=0.7.2" },
     { name = "mcp", specifier = ">=1.28.0,<2.0.0" },
     { name = "pillow", specifier = ">=10.2.0" },
@@ -1380,6 +1382,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "keenable"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5f/9d/315a4620df4ce9735632cb2bddaa45e5f7bb88173b6daf0bfba934f26c3b/keenable-0.1.5.tar.gz", hash = "sha256:6eb2c88631114316e777419a6d24c6e6bb4fd908dc05ac40f6bf864a19cbedda", size = 83269, upload-time = "2026-11-13T15:44:43.621Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/b3/bc404ed5227707ffc802664fa1a2d91c935bed82e4cd1cade42036ea7f07/keenable-0.1.5-py3-none-any.whl", hash = "sha256:850ea89f2f86df9f2c1af9775f54e4dc828900b67c917a558c1097e8cc64bb33", size = 36247, upload-time = "2026-11-13T15:44:42.261Z" },
 ]
 
 [[package]]

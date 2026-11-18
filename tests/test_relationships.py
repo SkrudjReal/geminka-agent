@@ -4,6 +4,28 @@ from app.engines import emotional
 from app.engines.emotional import EmotionalEngine
 
 
+def test_cold_legacy_scores_do_not_override_current_distance_or_rp(tmp_path, monkeypatch):
+    from app.engines.rp import can_reciprocate_rp
+
+    engine = EmotionalEngine(tmp_path / 'mood.json')
+    monkeypatch.setattr(emotional, 'emotion_engine', engine)
+    state = engine.get_state(42)
+    state.affection, state.affinity, state.warmth, state.hurt = 100, 183, 22, 81
+    state.mood = 'cold'
+    assert state.get_relationship_stage() == 'Конфликт / дистанция'
+    assert 'дистанция' in state.get_stage_description()
+    assert not can_reciprocate_rp(42, 'обнять')
+    assert not can_reciprocate_rp(42, 'засосать')
+    assert can_reciprocate_rp(42, 'дать пять')
+    assert state.affinity == 183
+    assert state.affection == 100
+    state.hurt, state.warmth = 0, 90
+    assert can_reciprocate_rp(42, 'обнять')
+    assert not can_reciprocate_rp(42, 'поцеловать')
+    engine.relationship['partner_id'] = 42
+    assert can_reciprocate_rp(42, 'поцеловать')
+
+
 def test_strangers_are_not_automatically_soulmates(tmp_path):
     engine = EmotionalEngine(tmp_path / "mood.json")
     state = engine.get_state(42)
@@ -103,6 +125,31 @@ async def test_group_reply_without_prefix_keeps_own_text_for_emotions(tmp_path, 
     result = await handlers._prepare_message(message, SimpleNamespace(id=7), None)
     assert result is not None and engine.get_state(42).hurt == 40
     assert engine.get_state(42).hurt_reason == "ты дура"
+    before = engine.get_state(42).affinity
+    monkeypatch.setattr(handlers, 'extract_message_context', AsyncMock(return_value='обнять'))
+    message = message.model_copy(update={'text': 'обнять', 'message_id': 2})
+    result = await handlers._prepare_message(message, SimpleNamespace(id=7), None)
+    assert engine.get_state(42).affinity == before
+    assert 'взаимно, нежно' not in result['prompt']
+
+
+async def test_stream_does_not_send_affectionate_banner_when_hurt(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.engines import rp
+    from app.services.streamer import TelegramStreamConsumer
+
+    engine = EmotionalEngine(tmp_path / 'mood.json')
+    engine.apply_model_mood(42, state_name='cold', delta=-80)
+    monkeypatch.setattr(emotional, 'emotion_engine', engine)
+    monkeypatch.setattr(rp, 'get_random_rp_phrase', lambda *a: 'UNEXPECTED_RP_BANNER')
+    bot = SimpleNamespace(send_message=AsyncMock())
+    async def tokens():
+        yield 'Нет. <tg-rp action="поцеловать"/>'
+    result = await TelegramStreamConsumer(bot, 42, 42).stream_from_generator(tokens())
+    assert 'UNEXPECTED_RP_BANNER' not in result
+    assert all('UNEXPECTED_RP_BANNER' not in str(call) for call in bot.send_message.call_args_list)
 
 
 async def test_stream_applies_partner_choice_only_for_sender_and_not_debug(tmp_path, monkeypatch):

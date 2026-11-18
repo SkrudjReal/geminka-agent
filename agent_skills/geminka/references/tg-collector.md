@@ -44,7 +44,7 @@ Saved Messages коллектора не собираются. При отсут
 ## Как вызвать
 
 1. Вызови `collector_tools()` — получишь актуальные короткие описания и JSON-схемы.
-2. Найди пользователя/чат через `collector_call(tool_name="list_users", arguments={"username":"Notkisa"})`
+2. Найди пользователя/чат через `collector_call(tool_name="list_users", arguments={"username":"username"})`
    или `list_chats` с username. Не угадывай числовые ID и не смешивай одноимённых людей.
 3. Вызови нужный инструмент через `collector_call(tool_name=..., arguments={...})`.
    Успех означает `ok=true`; результат содержит стандартные MCP `content` и,

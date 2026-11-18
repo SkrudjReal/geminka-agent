@@ -29,6 +29,7 @@ from app.core import config
 from app.services.bot_api import BotApiCallError, call_bot_api
 from app.services.collector_mcp import register_collector
 from app.services.sqlite_memory import MemoryRejected, MemoryWriteDisabled, memory
+from app.services.web_search import register_web_search
 
 # ponytail: in-memory pending flow; restart cancels an unfinished channel publish safely.
 _PENDING_CHANNEL_POSTS: dict[int, dict[str, Any]] = {}
@@ -668,6 +669,7 @@ def _collector_access() -> bool:
 
 
 register_collector(mcp, _collector_access)
+register_web_search(mcp, _collector_access)
 
 
 async def main() -> None:

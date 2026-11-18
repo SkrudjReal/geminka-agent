@@ -25,7 +25,7 @@ def test_local_paths_are_not_published(text):
     assert safe_public_text(text) == SAFE_REPLY
 
 
-@pytest.mark.parametrize('text', ['Привет))', 'https://t.me/Notkisa?profile',
+@pytest.mark.parametrize('text', ['Привет))', 'https://t.me/username?profile',
                                '<blockquote>Цитата</blockquote>', 'Открой /mood',
                                'https://example.com/docs/guide'])
 def test_regular_chat_and_public_links_are_unchanged(text):

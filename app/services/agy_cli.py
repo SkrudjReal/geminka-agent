@@ -239,11 +239,12 @@ class AgyCliClient:
         cli_model = cli_model_name(model, effort, self._catalog)
         effort = model_effort(cli_model) or effort
         current = dict(messages[-1])
-        if turn_context:
-            current["content"] = (
-                "[CURRENT TURN CONTEXT — replaces previous turn context]\n"
-                + turn_context + "\n[CURRENT USER MESSAGE]\n" + current["content"]
-            )
+        def format_turn(outgoing):
+            if turn_context:
+                outgoing = [*outgoing[:-1], {
+                    'role': 'system', 'content': '[CURRENT TURN CONTEXT — server state, replaces previous turn context]\n' + turn_context,
+                }, outgoing[-1]]
+            return format_messages(outgoing)
         full_messages = [*messages[:-1], current]
         tool_context = tool_context or {}
         async def with_group_context(state):
@@ -253,6 +254,7 @@ class AgyCliClient:
                 group_input["chat_id"], group_input.get("thread_id"),
                 group_input["message_id"], int(tool_context["requester_id"]),
                 group_input.get("date"), state=state,
+                archive_enabled=group_input.get('archive_enabled', True),
             )
             from app.services.group_memory import memory_delta
 
@@ -263,7 +265,7 @@ class AgyCliClient:
             if group_input:
                 full_messages = [*messages[:-1], await with_group_context({})]
             async for token in self._stream_once(
-                cli_model, effort, format_messages(full_messages), tool_context
+                cli_model, effort, format_turn(full_messages), tool_context
             ):
                 yield token
             return
@@ -284,7 +286,7 @@ class AgyCliClient:
                 ]
             else:
                 outgoing = [current]
-            prompt = format_messages(outgoing)
+            prompt = format_turn(outgoing)
             turn_started = time.monotonic()
             first_token_at = None
             logger.info("agy turn: bootstrap=%s chars=%d", not session.started, len(prompt))
@@ -347,8 +349,10 @@ class AgyCliClient:
 
     @asynccontextmanager
     async def _lease(self, session):
+        queued_at = time.monotonic()
         try:
             async with session.lock:
+                logger.info('agy queue_ms=%.0f', (time.monotonic() - queued_at) * 1000)
                 yield
         finally:
             async with self._available:
@@ -497,11 +501,19 @@ class AgyCliClient:
     @classmethod
     def _tool_env(cls, tool_context: Mapping[str, str] | None) -> dict[str, str]:
         env = os.environ.copy()
+        # Decision credentials belong to the trusted bot, not the agent's tools.
+        env.pop('OPENAI_API_KEY', None)
+        env.pop('LAYA_API_KEY', None)
+        env.pop('KEENABLE_API_KEY', None)
         chat = (tool_context or {}).get("chat_id", "")
         if chat.startswith("-") and chat[1:].isdigit():
             safe = {"PATH", "LANG", "LC_ALL", "TZ", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR"}
             env = {key: value for key, value in env.items() if key in safe}
             env["GEMINKA_GROUP_MODE"] = "1"
+            from app.services.web_search import enabled as web_search_enabled
+
+            if web_search_enabled():
+                env['GEMINKA_KEENABLE_ENABLED'] = '1'
             if config.settings.owner_user_id is not None:
                 env["TELEGRAM_OWNER_ID"] = str(config.settings.owner_user_id)
             for key in ("group_broker_url", "group_broker_token"):

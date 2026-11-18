@@ -12,6 +12,20 @@ from app.services.harvester import AssetHarvester
 from app.services.sticker_scanner import StickerPackScanner
 
 
+async def test_failed_pack_is_not_scheduled_on_every_message(temp_scanner, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    scanner, *_ = temp_scanner
+    scan = AsyncMock(return_value=False)
+    monkeypatch.setattr(scanner, 'scan_sticker_pack', scan)
+    scanner.schedule_scan(None, 'broken')
+    await scanner._scheduled_scans['broken']
+    scanner.schedule_scan(None, 'broken')
+    await asyncio.sleep(0)
+    scan.assert_awaited_once()
+
+
 async def test_failed_vision_does_not_invent_description(temp_scanner, monkeypatch):
     scanner, assets, _, tmp = temp_scanner
     frame = tmp / 'frame.png'

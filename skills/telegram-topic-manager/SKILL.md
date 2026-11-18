@@ -46,8 +46,8 @@ https://t.me/c/<chat_num>/<topic_id>
    - If `<chat_num>` does NOT start with `100`: `chat_id = int(f"-100{chat_num}")`
    - If `<chat_num>` starts with `100`: `chat_id = int(f"-{chat_num}")`
 3. Example:
-   - Input: `https://t.me/c/4488980222/5`
-   - Result: `chat_id = -1004488980222`, `topic_id = 5`
+   - Input: `https://t.me/c/1234567890/5`
+   - Result: `chat_id = -1001234567890`, `topic_id = 5`
 
 ---
 
@@ -64,7 +64,7 @@ sequenceDiagram
     User->>Bot: /topic
     Bot->>User: Inline menu (➕ Добавить в топик | 📑 Топики)
     User->>Bot: Clicks "➕ Добавить в топик"
-    Bot->>User: "Пришли ссылку вида https://t.me/c/4488980222/5"
+    Bot->>User: "Пришли ссылку вида https://t.me/c/1234567890/5"
     User->>Bot: Sends link
     Bot->>TM: parse_topic_link(url)
     TM->>API: get_chat(chat_id) & get_chat_member(chat_id, bot_id)
@@ -98,11 +98,11 @@ sequenceDiagram
 ```json
 {
   "topics": {
-    "-1004488980222:5": {
-      "chat_id": -1004488980222,
+    "-1001234567890:5": {
+      "chat_id": -1001234567890,
       "topic_id": 5,
       "chat_title": "Development Discussion",
-      "added_by": 1224362805,
+      "added_by": 10001,
       "created_at": 1787723456.0
     }
   }

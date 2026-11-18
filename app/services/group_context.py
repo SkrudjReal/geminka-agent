@@ -52,11 +52,11 @@ def _payload(response):
     return data if isinstance(data, dict) else {}
 
 
-async def build_context(chat_id, thread_id, message_id, user_id, date, *, state=None):
+async def build_context(chat_id, thread_id, message_id, user_id, date, *, state=None, archive_enabled=True):
     if not topic_manager.is_group_configured(chat_id):
         return ""
     rows = dict(_history.get((chat_id, thread_id), {}))
-    cfg = collector_config()
+    cfg = collector_config() if archive_enabled else None
     scope = {"chat_id": chat_id, "topic_id": thread_id}
     state = state if state is not None else {}
     cursor = state.get("cursor", 0)

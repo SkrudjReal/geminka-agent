@@ -100,6 +100,30 @@ async def test_profile_updates_deletes_fts_debug_and_forget(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_group_companion_role_is_not_added_to_private_owner_chat(tmp_path, monkeypatch):
+    from app.services.antigravity import GROUP_COMPANION_ROLE
+
+    memory = make_memory(tmp_path)
+    client = AntigravityClient(store=memory.store, contexts=ContextManager(memory.store), memories=memory)
+    seen = []
+    async def stream(*args, **kwargs):
+        seen.append(kwargs)
+        yield 'Ответ'
+    client._agy = SimpleNamespace(stream=stream, aclose=AsyncMock())
+    client._group_collector = SimpleNamespace(credentials=AsyncMock(return_value={}), close=AsyncMock())
+    monkeypatch.setattr(client.group_memories, 'recall', lambda *a: {'summary': '', 'hits': []})
+    try:
+        for private in (True, False):
+            assert [part async for part in client.stream_omp_chat(1, 'Привет', system_prompt='PERSONA',
+                memory_input={'private': private, 'chat_id': -123 if not private else 1,
+                              'text': 'Привет', 'already_archived': True})] == ['Ответ']
+        assert GROUP_COMPANION_ROLE not in seen[0]['messages'][0]['content']
+        assert GROUP_COMPANION_ROLE in seen[1]['messages'][0]['content']
+        assert 'PERSONA' in seen[1]['messages'][0]['content']
+    finally:
+        await client.aclose()
+
+
 async def test_no_automatic_search_or_background_llm_and_archive_retains_failed_input(tmp_path):
     memory = make_memory(tmp_path)
     client = AntigravityClient(
@@ -151,6 +175,8 @@ async def test_persona_and_profile_are_frozen_until_new_live_session(tmp_path, m
     client = AntigravityClient(store=memory.store, contexts=ContextManager(memory.store), memories=memory)
     agy = client._agy
     sent = []
+    # This unit test must not depend on the owner's installed AGY model catalog.
+    agy._catalog = [client.get_user_model(1).removeprefix('google-antigravity/')]
 
     async def session(user_id, model, effort, context):
         if user_id not in agy._sessions:

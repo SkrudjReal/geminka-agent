@@ -9,6 +9,18 @@ from app.services import pinterest_self as service
 from app.services.streamer import PHOTO_PAIR_TAG_RE
 
 
+async def test_luna_vision_does_not_start_agy(monkeypatch, tmp_path):
+    from app.services import agy_acp
+    from app.services.decisions import decisions
+
+    path = tmp_path / 'photo.jpg'
+    path.write_bytes(b'pixels')
+    item = {'path': str(path), 'url': 'https://image/1'}
+    monkeypatch.setattr(decisions, 'approve_image', AsyncMock(return_value=[1]))
+    monkeypatch.setattr(agy_acp, 'AgyAcpClient', lambda **kwargs: pytest.fail('AGY should not start'))
+    assert await service._approved_candidates([item], tmp_path, 1) == [item]
+
+
 @pytest.mark.asyncio
 async def test_no_repeats_per_chat_by_url(monkeypatch, tmp_path):
     async def search(*args, **kwargs):
